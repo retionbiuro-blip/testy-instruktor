@@ -1,0 +1,6 @@
+{
+  "name": "InstruktorPro — Platforma Egzaminacyjna dla Kandydatów na Instruktorów Nauki Jazdy",
+  "description": "Kompletna aplikacja webowa do nauki testów na kursie dla kandydatów na instruktorów nauki jazdy z trybem nauki, powtórką błędów, symulacją egzaminu, rankingiem i panelem administratora.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

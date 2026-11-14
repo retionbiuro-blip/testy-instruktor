@@ -1,0 +1,279 @@
+{
+  "entities": {
+    "SystemMetadata": {
+      "title": "SystemMetadata",
+      "description": "Global database version counter and category registry used to avoid redundant full-collection reads.",
+      "type": "object",
+      "properties": {
+        "dbVersion": {
+          "type": "number",
+          "description": "Incrementing version number bumped on every question or category change."
+        },
+        "categories": {
+          "type": "array",
+          "description": "List of available driving instructor exam categories."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last metadata update."
+        }
+      },
+      "required": ["dbVersion", "categories"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "Driving instructor exam question with multiple-choice options and optional compressed Base64 image.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "questionHash": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 3000
+        },
+        "options": {
+          "type": "array",
+          "description": "Answer options without A/B/C prefixes."
+        },
+        "correctAnswers": {
+          "type": "array",
+          "description": "Zero-based indices of correct answers (1 to 3 items)."
+        },
+        "imageBase64": {
+          "type": "string",
+          "maxLength": 300000
+        },
+        "hasImagePlaceholder": {
+          "type": "boolean"
+        },
+        "explanation": {
+          "type": "string",
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "questionHash", "category", "question", "options", "correctAnswers", "hasImagePlaceholder"]
+    },
+    "Comment": {
+      "title": "Comment",
+      "description": "Shared student comment or group note attached to a question.",
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorNick": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["questionId", "authorNick", "authorUid", "text", "createdAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "Student-submitted error report for a question.",
+      "type": "object",
+      "properties": {
+        "questionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "questionSnippet": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "reporterUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reporterNick": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["questionId", "questionSnippet", "category", "reporterUid", "reporterNick", "reason", "status", "createdAt"]
+    },
+    "UserProgress": {
+      "title": "UserProgress",
+      "description": "Private student learning progress, mistake streaks, lecturer bookmarks, and private notes.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "nick": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "masteredIds": {
+          "type": "array"
+        },
+        "mistakeStreaks": {
+          "type": "object"
+        },
+        "askLecturerIds": {
+          "type": "array"
+        },
+        "privateNotes": {
+          "type": "object"
+        },
+        "totalAnswered": {
+          "type": "number"
+        },
+        "totalCorrect": {
+          "type": "number"
+        },
+        "points": {
+          "type": "number"
+        },
+        "streakDays": {
+          "type": "number"
+        },
+        "lastStudyDate": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "examHistory": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "nick", "email", "masteredIds", "mistakeStreaks", "askLecturerIds", "privateNotes", "totalAnswered", "totalCorrect", "points", "streakDays"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public non-PII course ranking statistics for a student.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "nick": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "masteredCount": {
+          "type": "number"
+        },
+        "points": {
+          "type": "number"
+        },
+        "streakDays": {
+          "type": "number"
+        },
+        "accuracy": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "nick", "masteredCount", "points", "streakDays", "accuracy"]
+    }
+  },
+  "firestore": {
+    "/system/metadata": {
+      "schema": "SystemMetadata",
+      "description": "Single metadata document tracking dbVersion and category list."
+    },
+    "/questions/{questionId}": {
+      "schema": "Question",
+      "description": "Master bank of driving instructor exam questions."
+    },
+    "/comments/{commentId}": {
+      "schema": "Comment",
+      "description": "Shared group notes and comments under questions."
+    },
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Student error reports on questions for admin review."
+    },
+    "/users/{userId}": {
+      "schema": "UserProgress",
+      "description": "Private student progress, notes, and PII."
+    },
+    "/leaderboard/{userId}": {
+      "schema": "LeaderboardEntry",
+      "description": "Public non-PII ranking entry per student."
+    }
+  }
+}

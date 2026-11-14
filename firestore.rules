@@ -1,0 +1,178 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Globalny bezpiecznik: domyślnie wszystko zablokowane
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- FUNKCJE POMOCNICZE ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // UWAGA: Jeśli przenosisz projekt na własne konto Firebase,
+    // wpisz tutaj ten sam adres e-mail co w stałej ADMIN_EMAIL w pliku src/config.ts
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email != null &&
+        request.auth.token.email == 'retion.biuro@gmail.com';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- WALIDATORY SCHEMATÓW ---
+    function isValidSystemMetadata(data) {
+      return data.keys().hasAll(['dbVersion', 'categories']) &&
+        data.keys().hasOnly(['dbVersion', 'categories', 'updatedAt']) &&
+        data.dbVersion is number && data.dbVersion >= 0 &&
+        data.categories is list && data.categories.size() <= 100 &&
+        (data.categories.size() == 0 || data.categories[0] is string);
+    }
+
+    function isValidQuestion(data) {
+      return data.keys().hasAll(['id', 'questionHash', 'category', 'question', 'options', 'correctAnswers', 'hasImagePlaceholder']) &&
+        data.keys().hasOnly(['id', 'questionHash', 'category', 'question', 'options', 'correctAnswers', 'imageBase64', 'hasImagePlaceholder', 'explanation', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.questionHash is string && data.questionHash.size() > 0 && data.questionHash.size() <= 1000 &&
+        data.category is string && data.category.size() > 0 && data.category.size() <= 120 &&
+        data.question is string && data.question.size() > 0 && data.question.size() <= 3000 &&
+        data.options is list && data.options.size() >= 2 && data.options.size() <= 8 &&
+        data.options[0] is string &&
+        data.correctAnswers is list && data.correctAnswers.size() >= 1 && data.correctAnswers.size() <= 3 &&
+        data.correctAnswers[0] is number &&
+        data.hasImagePlaceholder is bool &&
+        (!('imageBase64' in data) || (data.imageBase64 is string && data.imageBase64.size() <= 300000)) &&
+        (!('explanation' in data) || (data.explanation is string && data.explanation.size() <= 4000));
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['questionId', 'authorNick', 'authorUid', 'text', 'createdAt']) &&
+        data.keys().hasOnly(['questionId', 'authorNick', 'authorUid', 'text', 'createdAt']) &&
+        isValidId(data.questionId) &&
+        data.authorNick is string && data.authorNick.size() >= 1 && data.authorNick.size() <= 60 &&
+        data.authorUid is string && data.authorUid == request.auth.uid &&
+        data.text is string && data.text.size() >= 1 && data.text.size() <= 1500 &&
+        data.createdAt == request.time;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['questionId', 'questionSnippet', 'category', 'reporterUid', 'reporterNick', 'reason', 'status', 'createdAt']) &&
+        data.keys().hasOnly(['questionId', 'questionSnippet', 'category', 'reporterUid', 'reporterNick', 'reason', 'status', 'createdAt']) &&
+        isValidId(data.questionId) &&
+        data.questionSnippet is string && data.questionSnippet.size() >= 1 && data.questionSnippet.size() <= 300 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 120 &&
+        data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128 &&
+        data.reporterNick is string && data.reporterNick.size() >= 1 && data.reporterNick.size() <= 60 &&
+        data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 1000 &&
+        (data.status == 'open' || data.status == 'resolved');
+    }
+
+    function isValidUserProgress(data, userId) {
+      return data.keys().hasAll(['uid', 'nick', 'email', 'masteredIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays']) &&
+        data.keys().hasOnly(['uid', 'nick', 'email', 'masteredIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays', 'lastStudyDate', 'examHistory', 'updatedAt']) &&
+        data.uid == userId &&
+        data.nick is string && data.nick.size() >= 2 && data.nick.size() <= 60 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
+        data.masteredIds is list && data.masteredIds.size() <= 10000 &&
+        data.mistakeStreaks is map &&
+        data.askLecturerIds is list && data.askLecturerIds.size() <= 5000 &&
+        data.privateNotes is map &&
+        data.totalAnswered is number && data.totalAnswered >= 0 &&
+        data.totalCorrect is number && data.totalCorrect >= 0 &&
+        data.points is number && data.points >= 0 &&
+        data.streakDays is number && data.streakDays >= 0 &&
+        (!('lastStudyDate' in data) || (data.lastStudyDate is string && data.lastStudyDate.size() <= 20)) &&
+        (!('examHistory' in data) || (data.examHistory is list && data.examHistory.size() <= 200));
+    }
+
+    function isValidLeaderboardEntry(data, userId) {
+      return data.keys().hasAll(['uid', 'nick', 'masteredCount', 'points', 'streakDays', 'accuracy']) &&
+        data.keys().hasOnly(['uid', 'nick', 'masteredCount', 'points', 'streakDays', 'accuracy', 'updatedAt']) &&
+        data.uid == userId &&
+        data.nick is string && data.nick.size() >= 2 && data.nick.size() <= 60 &&
+        data.masteredCount is number && data.masteredCount >= 0 &&
+        data.points is number && data.points >= 0 &&
+        data.streakDays is number && data.streakDays >= 0 &&
+        data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100;
+    }
+
+    // --- KOLEKCJE ---
+
+    // 1. Metadane wersji bazy i kategorie
+    match /system/metadata {
+      allow get: if isSignedIn();
+      allow create, update: if isAdmin() && isValidSystemMetadata(incoming());
+      allow delete: if false;
+    }
+
+    // 2. Pytania egzaminacyjne
+    match /questions/{questionId} {
+      allow get: if isSignedIn() && isValidId(questionId);
+      allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(questionId) && isValidQuestion(incoming()) && incoming().id == questionId;
+      allow update: if isAdmin() && isValidId(questionId) && isValidQuestion(incoming()) && incoming().id == questionId;
+      allow delete: if isAdmin() && isValidId(questionId);
+    }
+
+    // 3. Wspólne komentarze kursantów pod pytaniami
+    match /comments/{commentId} {
+      allow get: if isSignedIn() && isValidId(commentId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(commentId) && isValidComment(incoming());
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(commentId) && (existing().authorUid == request.auth.uid || isAdmin());
+    }
+
+    // 4. Zgłoszenia błędów w pytaniach
+    match /reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reportId) && isValidReport(incoming()) &&
+        incoming().reporterUid == request.auth.uid &&
+        incoming().status == 'open' &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() && isValidId(reportId) && isValidReport(incoming()) &&
+        incoming().reporterUid == existing().reporterUid &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isAdmin() && isValidId(reportId);
+    }
+
+    // 5. Prywatne postępy i notatki kursanta (zawierają e-mail -> tylko właściciel lub admin)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUserProgress(incoming(), userId);
+      allow update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        isValidUserProgress(incoming(), userId) &&
+        incoming().uid == existing().uid;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // 6. Publiczny ranking kursantów (bez danych wrażliwych / e-maila)
+    match /leaderboard/{userId} {
+      allow get: if isSignedIn() && isValidId(userId);
+      allow list: if isSignedIn();
+      allow create: if isValidId(userId) && isOwner(userId) && isValidLeaderboardEntry(incoming(), userId);
+      allow update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
+        isValidLeaderboardEntry(incoming(), userId) &&
+        incoming().uid == existing().uid;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+  }
+}
