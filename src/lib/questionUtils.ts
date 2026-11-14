@@ -1,15 +1,27 @@
 import { ParsedQuestionInput } from '../types';
 
-/**
- * Tworzy znormalizowany skrót tekstu pytania (małe litery, bez spacji i interpunkcji)
- * do automatycznego wykrywania duplikatów przy imporcie.
- */
-export function computeQuestionHash(text: string): string {
+function normalizeHashPart(text: string): string {
   return text
     .toLowerCase()
     .replace(/[\s\p{P}\p{S}]+/gu, '')
-    .trim()
-    .slice(0, 950);
+    .trim();
+}
+
+/**
+ * Tworzy znormalizowany skrót na podstawie treści pytania POŁĄCZONEJ
+ * ze znormalizowanymi treściami wszystkich odpowiedzi (małe litery, bez spacji i interpunkcji).
+ * Dzięki temu pytania o tym samym wstępie, ale różnych wariantach odpowiedzi, nie są duplikatami.
+ */
+export function computeQuestionHash(questionText: string, options: string[] = []): string {
+  const normQ = normalizeHashPart(questionText);
+  if (options.length === 0) {
+    return normQ.slice(0, 950);
+  }
+  const normOptions = options.map(normalizeHashPart).join('|');
+  if (normQ.length + normOptions.length + 2 <= 950) {
+    return `${normQ}||${normOptions}`;
+  }
+  return `${normQ.slice(0, 450)}||${normOptions.slice(0, 490)}`;
 }
 
 /**
@@ -143,6 +155,7 @@ export function parseImportedQuestionsJson(
   overrideCategory?: string
 ): {
   parsed: ParsedQuestionInput[];
+  internalDuplicateItems: ParsedQuestionInput[];
   internalDuplicates: number;
   rejected: number;
   errors: string[];
@@ -165,9 +178,9 @@ export function parseImportedQuestionsJson(
   }
 
   const parsed: ParsedQuestionInput[] = [];
+  const internalDuplicateItems: ParsedQuestionInput[] = [];
   const seenHashes = new Set<string>();
   const errors: string[] = [];
-  let internalDuplicates = 0;
   let rejected = 0;
 
   list.forEach((item, idx) => {
@@ -219,17 +232,11 @@ export function parseImportedQuestionsJson(
       return;
     }
 
-    const questionHash = computeQuestionHash(rawQuestion);
+    const questionHash = computeQuestionHash(rawQuestion, options);
     if (!questionHash) {
       rejected++;
       return;
     }
-
-    if (seenHashes.has(questionHash)) {
-      internalDuplicates++;
-      return;
-    }
-    seenHashes.add(questionHash);
 
     const categoryRaw = overrideCategory && overrideCategory.trim()
       ? overrideCategory.trim()
@@ -241,7 +248,7 @@ export function parseImportedQuestionsJson(
       ? row.imageBase64
       : undefined;
 
-    parsed.push({
+    const builtItem: ParsedQuestionInput = {
       category: categoryRaw.slice(0, 120),
       question: rawQuestion.slice(0, 3000),
       options,
@@ -250,10 +257,23 @@ export function parseImportedQuestionsJson(
       ...(explanationRaw ? { explanation: explanationRaw.slice(0, 4000) } : {}),
       ...(imageBase64 ? { imageBase64 } : {}),
       questionHash
-    });
+    };
+
+    if (seenHashes.has(questionHash)) {
+      internalDuplicateItems.push(builtItem);
+      return;
+    }
+    seenHashes.add(questionHash);
+    parsed.push(builtItem);
   });
 
-  return { parsed, internalDuplicates, rejected, errors };
+  return {
+    parsed,
+    internalDuplicateItems,
+    internalDuplicates: internalDuplicateItems.length,
+    rejected,
+    errors
+  };
 }
 
 export function getTodayLocalIsoDate(): string {

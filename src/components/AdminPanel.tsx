@@ -65,6 +65,12 @@ export function AdminPanel({
   const [importParseError, setImportParseError] = useState<string | null>(null);
   const [parsePreview, setParsePreview] = useState<{
     uniqueNew: ParsedQuestionInput[];
+    duplicates: {
+      tempId: string;
+      source: 'db' | 'file';
+      item: ParsedQuestionInput;
+    }[];
+    forcedDuplicateIds: string[];
     skippedDbDuplicates: number;
     internalDuplicates: number;
     rejected: number;
@@ -101,7 +107,8 @@ export function AdminPanel({
   const existingHashes = useMemo(() => {
     const set = new Set<string>();
     for (const q of questions) {
-      set.add(q.questionHash || computeQuestionHash(q.question));
+      // Zawsze przeliczamy hash z treści pytania i odpowiedzi wg nowego wzoru
+      set.add(computeQuestionHash(q.question, q.options));
     }
     return set;
   }, [questions]);
@@ -131,17 +138,37 @@ export function AdminPanel({
       const result = parseImportedQuestionsJson(text, effOverride);
       let skippedDbDuplicates = 0;
       const uniqueNew: ParsedQuestionInput[] = [];
+      const duplicates: {
+        tempId: string;
+        source: 'db' | 'file';
+        item: ParsedQuestionInput;
+      }[] = [];
 
-      for (const item of result.parsed) {
+      result.parsed.forEach((item, idx) => {
         if (existingHashes.has(item.questionHash)) {
           skippedDbDuplicates++;
+          duplicates.push({
+            tempId: `dup_db_${idx}`,
+            source: 'db',
+            item
+          });
         } else {
           uniqueNew.push(item);
         }
-      }
+      });
+
+      result.internalDuplicateItems.forEach((item, idx) => {
+        duplicates.push({
+          tempId: `dup_file_${idx}`,
+          source: 'file',
+          item
+        });
+      });
 
       setParsePreview({
         uniqueNew,
+        duplicates,
+        forcedDuplicateIds: [],
         skippedDbDuplicates,
         internalDuplicates: result.internalDuplicates,
         rejected: result.rejected,
@@ -151,6 +178,28 @@ export function AdminPanel({
       setParsePreview(null);
       setImportParseError(err instanceof Error ? err.message : 'Błąd odczytu JSON');
     }
+  }
+
+  function toggleForceDuplicate(tempId: string) {
+    setParsePreview((prev) => {
+      if (!prev) return prev;
+      const exists = prev.forcedDuplicateIds.includes(tempId);
+      const nextForced = exists
+        ? prev.forcedDuplicateIds.filter((id) => id !== tempId)
+        : [...prev.forcedDuplicateIds, tempId];
+      return { ...prev, forcedDuplicateIds: nextForced };
+    });
+  }
+
+  function toggleForceAllDuplicates() {
+    setParsePreview((prev) => {
+      if (!prev) return prev;
+      const allForced = prev.forcedDuplicateIds.length === prev.duplicates.length;
+      return {
+        ...prev,
+        forcedDuplicateIds: allForced ? [] : prev.duplicates.map((d) => d.tempId)
+      };
+    });
   }
 
   async function handleJsonFileChange(e: ChangeEvent<HTMLInputElement>) {
@@ -181,11 +230,17 @@ export function AdminPanel({
   }
 
   async function handleCommitBatchImport() {
-    if (!parsePreview || parsePreview.uniqueNew.length === 0 || importing) return;
+    if (!parsePreview || importing) return;
+    const forcedItems = parsePreview.duplicates
+      .filter((d) => parsePreview.forcedDuplicateIds.includes(d.tempId))
+      .map((d) => d.item);
+    const itemsToImport = [...parsePreview.uniqueNew, ...forcedItems];
+    if (itemsToImport.length === 0) return;
+
     setImporting(true);
     setImportProgress({
       completedBatches: 0,
-      totalBatches: Math.ceil(parsePreview.uniqueNew.length / FIRESTORE_BATCH_LIMIT),
+      totalBatches: Math.ceil(itemsToImport.length / FIRESTORE_BATCH_LIMIT),
       savedItems: 0
     });
     setImportSummary(null);
@@ -193,7 +248,7 @@ export function AdminPanel({
     try {
       const { addedQuestions, nextVersion, nextCategories, batchCount } =
         await batchImportQuestions(
-          parsePreview.uniqueNew,
+          itemsToImport,
           allCategoryNames,
           (completedBatches, totalBatches, savedItems) => {
             setImportProgress({ completedBatches, totalBatches, savedItems });
@@ -205,9 +260,10 @@ export function AdminPanel({
       setLocalDbVersion(nextVersion);
       onQuestionsUpdated(updatedList, nextCategories, nextVersion);
 
-      const totalSkipped = parsePreview.skippedDbDuplicates + parsePreview.internalDuplicates;
+      const totalSkipped =
+        parsePreview.duplicates.length - parsePreview.forcedDuplicateIds.length;
       setImportSummary(
-        `Import zakończony! Dodano ${addedQuestions.length} nowych pytań w ${batchCount} paczkach (pominięto duplikatów: ${totalSkipped}). Wersja bazy: ${nextVersion}.`
+        `Import zakończony! Dodano ${addedQuestions.length} pytań w ${batchCount} paczkach (w tym ręcznie dopuszczonych duplikatów: ${forcedItems.length}, pominiętych duplikatów: ${totalSkipped}). Wersja bazy: ${nextVersion}.`
       );
       setRawJsonText('');
       setParsePreview(null);
@@ -305,7 +361,7 @@ export function AdminPanel({
       const normalized: Question = {
         ...editingQuestion,
         question: cleanQuestionText,
-        questionHash: computeQuestionHash(cleanQuestionText),
+        questionHash: computeQuestionHash(cleanQuestionText, cleanOptions),
         category: editingQuestion.category.trim() || 'Ogólne / Mix',
         options: cleanOptions,
         correctAnswers: validCorrect.sort((a, b) => a - b),
@@ -642,132 +698,252 @@ export function AdminPanel({
               </div>
             )}
 
-            {/* Raport walidacji + podgląd pierwszych 5 pytań */}
-            {parsePreview && (
-              <div className="space-y-4 border-t border-slate-200 pt-5 dark:border-slate-800">
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Nowych do dodania</p>
-                    <p className="font-mono mt-1 text-lg font-bold text-emerald-700 tabular-nums dark:text-emerald-400">
-                      {parsePreview.uniqueNew.length}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Duplikaty (baza)</p>
-                    <p className="font-mono mt-1 text-lg font-bold text-amber-700 tabular-nums dark:text-amber-400">
-                      {parsePreview.skippedDbDuplicates}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Duplikaty (w pliku)</p>
-                    <p className="font-mono mt-1 text-lg font-bold text-slate-700 tabular-nums dark:text-slate-300">
-                      {parsePreview.internalDuplicates}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
-                    <p className="text-xs text-slate-500 dark:text-slate-400">Liczba paczek (max {FIRESTORE_BATCH_LIMIT})</p>
-                    <p className="font-mono mt-1 text-lg font-bold text-blue-700 tabular-nums dark:text-blue-400">
-                      {Math.ceil(parsePreview.uniqueNew.length / FIRESTORE_BATCH_LIMIT)}
-                    </p>
-                  </div>
-                </div>
+            {/* Raport walidacji + lista wykrytych duplikatów + podgląd pierwszych 5 pytań */}
+            {parsePreview && (() => {
+              const forcedItems = parsePreview.duplicates
+                .filter((d) => parsePreview.forcedDuplicateIds.includes(d.tempId))
+                .map((d) => d.item);
+              const itemsToImport = [...parsePreview.uniqueNew, ...forcedItems];
+              const allDuplicatesForced =
+                parsePreview.duplicates.length > 0 &&
+                parsePreview.forcedDuplicateIds.length === parsePreview.duplicates.length;
 
-                {parsePreview.errors.length > 0 && (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
-                    <p className="font-semibold">Pominięte błędne pozycje ({parsePreview.rejected}):</p>
-                    <ul className="mt-1 list-disc pl-4">
-                      {parsePreview.errors.slice(0, 5).map((err, i) => (
-                        <li key={i}>{err}</li>
-                      ))}
-                    </ul>
+              return (
+                <div className="space-y-5 border-t border-slate-200 pt-5 dark:border-slate-800">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Do zapisania</p>
+                      <p className="font-mono mt-1 text-lg font-bold text-emerald-700 tabular-nums dark:text-emerald-400">
+                        {itemsToImport.length}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Duplikaty (baza)</p>
+                      <p className="font-mono mt-1 text-lg font-bold text-amber-700 tabular-nums dark:text-amber-400">
+                        {parsePreview.skippedDbDuplicates}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Duplikaty (w pliku)</p>
+                      <p className="font-mono mt-1 text-lg font-bold text-slate-700 tabular-nums dark:text-slate-300">
+                        {parsePreview.internalDuplicates}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Liczba paczek (max {FIRESTORE_BATCH_LIMIT})
+                      </p>
+                      <p className="font-mono mt-1 text-lg font-bold text-blue-700 tabular-nums dark:text-blue-400">
+                        {Math.ceil(itemsToImport.length / FIRESTORE_BATCH_LIMIT)}
+                      </p>
+                    </div>
                   </div>
-                )}
 
-                {parsePreview.uniqueNew.length > 0 && (
-                  <div className="space-y-3">
-                    <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
-                      Podgląd pierwszych {Math.min(5, parsePreview.uniqueNew.length)} pytań z zaznaczonymi poprawnymi odpowiedziami
-                    </h3>
+                  {parsePreview.errors.length > 0 && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                      <p className="font-semibold">Pominięte błędne pozycje ({parsePreview.rejected}):</p>
+                      <ul className="mt-1 list-disc pl-4">
+                        {parsePreview.errors.slice(0, 5).map((err, i) => (
+                          <li key={i}>{err}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
-                    <div className="space-y-3">
-                      {parsePreview.uniqueNew.slice(0, 5).map((q, idx) => (
-                        <div
-                          key={q.questionHash + idx}
-                          className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 text-sm dark:border-slate-800 dark:bg-slate-950"
+                  {/* Wykryte duplikaty z możliwością ręcznego dopuszczenia do importu */}
+                  {parsePreview.duplicates.length > 0 && (
+                    <div className="space-y-3 rounded-lg border border-amber-300/80 bg-amber-50/40 p-4 dark:border-amber-800/70 dark:bg-amber-950/20">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                            Wykryte duplikaty ({parsePreview.duplicates.length})
+                          </h3>
+                          <p className="text-xs text-slate-600 dark:text-slate-300">
+                            Hash jest liczony z treści pytania i odpowiedzi. Jeśli pytanie różni się np. obrazkiem, kliknij „Dodaj mimo to”.
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={toggleForceAllDuplicates}
+                          className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                            allDuplicatesForced
+                              ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                              : 'border-amber-400 bg-white text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:bg-slate-900 dark:text-amber-300 dark:hover:bg-amber-950/50'
+                          }`}
                         >
-                          <p className="text-xs font-medium text-blue-700 dark:text-blue-400">
-                            #{idx + 1} · {q.category}
-                            {q.hasImagePlaceholder ? ' · Wymaga obrazka' : ''}
-                          </p>
-                          <p className="mt-1 font-semibold text-slate-900 dark:text-white">
-                            {q.question}
-                          </p>
-                          <ul className="mt-2 space-y-1 text-xs">
-                            {q.options.map((opt, optIdx) => {
-                              const isRight = q.correctAnswers.includes(optIdx);
-                              return (
-                                <li
-                                  key={optIdx}
-                                  className={`flex items-center gap-2 rounded px-2 py-1 ${
-                                    isRight
-                                      ? 'bg-emerald-100/80 font-semibold text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
-                                      : 'text-slate-600 dark:text-slate-400'
+                          {allDuplicatesForced
+                            ? 'Odznacz wszystkie duplikaty'
+                            : 'Zezwól na import wszystkich duplikatów'}
+                        </button>
+                      </div>
+
+                      <div className="max-h-96 space-y-2.5 overflow-y-auto pr-1">
+                        {parsePreview.duplicates.map((dup) => {
+                          const isForced = parsePreview.forcedDuplicateIds.includes(dup.tempId);
+                          return (
+                            <div
+                              key={dup.tempId}
+                              className={`rounded-lg border p-3.5 text-sm transition-colors ${
+                                isForced
+                                  ? 'border-emerald-400 bg-emerald-50/70 dark:border-emerald-700 dark:bg-emerald-950/30'
+                                  : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950'
+                              }`}
+                            >
+                              <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+                                <div className="flex-1 space-y-1.5">
+                                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                                    <span className="font-semibold text-amber-700 dark:text-amber-400">
+                                      {dup.source === 'db'
+                                        ? 'Już istnieje w bazie Firestore'
+                                        : 'Powtórzenie wewnątrz pliku'}
+                                    </span>
+                                    <span aria-hidden="true">·</span>
+                                    <span>{dup.item.category}</span>
+                                    {dup.item.hasImagePlaceholder && (
+                                      <>
+                                        <span aria-hidden="true">·</span>
+                                        <span className="font-medium text-blue-700 dark:text-blue-400">
+                                          Wymaga obrazka
+                                        </span>
+                                      </>
+                                    )}
+                                  </div>
+
+                                  <p className="font-semibold text-slate-900 dark:text-white">
+                                    {dup.item.question}
+                                  </p>
+
+                                  <ul className="space-y-1 text-xs">
+                                    {dup.item.options.map((opt, optIdx) => {
+                                      const isRight = dup.item.correctAnswers.includes(optIdx);
+                                      return (
+                                        <li
+                                          key={optIdx}
+                                          className={`flex items-center gap-1.5 ${
+                                            isRight
+                                              ? 'font-semibold text-emerald-800 dark:text-emerald-300'
+                                              : 'text-slate-600 dark:text-slate-400'
+                                          }`}
+                                        >
+                                          <span className="font-mono">
+                                            {OPTION_LETTERS[optIdx] ?? optIdx + 1}.
+                                          </span>
+                                          <span>{opt}</span>
+                                          {isRight && (
+                                            <Check className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                                          )}
+                                        </li>
+                                      );
+                                    })}
+                                  </ul>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={() => toggleForceDuplicate(dup.tempId)}
+                                  className={`shrink-0 cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors ${
+                                    isForced
+                                      ? 'border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700'
+                                      : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800'
                                   }`}
                                 >
-                                  {isRight && <Check className="h-3.5 w-3.5 shrink-0" />}
-                                  <span>
-                                    {OPTION_LETTERS[optIdx] ?? optIdx + 1}. {opt}
-                                  </span>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-
-                    {importing && importProgress && (
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
-                          <span>
-                            Zapisywanie paczki {importProgress.completedBatches} z {importProgress.totalBatches}...
-                          </span>
-                          <span className="font-mono tabular-nums">
-                            {importProgress.savedItems} / {parsePreview.uniqueNew.length}
-                          </span>
-                        </div>
-                        <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                          <div
-                            className="h-full bg-blue-700 transition-all dark:bg-blue-500"
-                            style={{
-                              width: `${Math.round(
-                                (importProgress.savedItems / parsePreview.uniqueNew.length) * 100
-                              )}%`
-                            }}
-                          />
-                        </div>
+                                  {isForced ? 'Dodano do importu · Cofnij' : 'Dodaj mimo to'}
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    )}
+                    </div>
+                  )}
 
-                    <button
-                      type="button"
-                      disabled={importing}
-                      onClick={handleCommitBatchImport}
-                      className="flex cursor-pointer items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600"
-                    >
-                      {importing ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <FileJson className="h-4 w-4" />
+                  {itemsToImport.length > 0 && (
+                    <div className="space-y-3">
+                      <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                        Podgląd pierwszych {Math.min(5, itemsToImport.length)} pytań do wgrania z zaznaczonymi poprawnymi odpowiedziami
+                      </h3>
+
+                      <div className="space-y-3">
+                        {itemsToImport.slice(0, 5).map((q, idx) => (
+                          <div
+                            key={q.questionHash + idx}
+                            className="rounded-lg border border-slate-200 bg-slate-50/70 p-4 text-sm dark:border-slate-800 dark:bg-slate-950"
+                          >
+                            <p className="text-xs font-medium text-blue-700 dark:text-blue-400">
+                              #{idx + 1} · {q.category}
+                              {q.hasImagePlaceholder ? ' · Wymaga obrazka' : ''}
+                            </p>
+                            <p className="mt-1 font-semibold text-slate-900 dark:text-white">
+                              {q.question}
+                            </p>
+                            <ul className="mt-2 space-y-1 text-xs">
+                              {q.options.map((opt, optIdx) => {
+                                const isRight = q.correctAnswers.includes(optIdx);
+                                return (
+                                  <li
+                                    key={optIdx}
+                                    className={`flex items-center gap-2 rounded px-2 py-1 ${
+                                      isRight
+                                        ? 'bg-emerald-100/80 font-semibold text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                        : 'text-slate-600 dark:text-slate-400'
+                                    }`}
+                                  >
+                                    {isRight && <Check className="h-3.5 w-3.5 shrink-0" />}
+                                    <span>
+                                      {OPTION_LETTERS[optIdx] ?? optIdx + 1}. {opt}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+
+                      {importing && importProgress && (
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
+                            <span>
+                              Zapisywanie paczki {importProgress.completedBatches} z {importProgress.totalBatches}...
+                            </span>
+                            <span className="font-mono tabular-nums">
+                              {importProgress.savedItems} / {itemsToImport.length}
+                            </span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                            <div
+                              className="h-full bg-blue-700 transition-all dark:bg-blue-500"
+                              style={{
+                                width: `${Math.round(
+                                  (importProgress.savedItems / itemsToImport.length) * 100
+                                )}%`
+                              }}
+                            />
+                          </div>
+                        </div>
                       )}
-                      <span>
-                        Zatwierdź i zapisz {parsePreview.uniqueNew.length} pytań do Firestore
-                      </span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
+
+                      <button
+                        type="button"
+                        disabled={importing}
+                        onClick={handleCommitBatchImport}
+                        className="flex cursor-pointer items-center gap-2 rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600"
+                      >
+                        {importing ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <FileJson className="h-4 w-4" />
+                        )}
+                        <span>
+                          Zatwierdź i zapisz {itemsToImport.length} pytań do Firestore
+                        </span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         </section>
       )}
