@@ -8,6 +8,7 @@ import {
   Flag,
   HelpCircle,
   Loader2,
+  Lock,
   MessageSquare,
   RotateCcw,
   Save,
@@ -43,6 +44,8 @@ interface StudyViewProps {
   progress: UserProgress;
   onProgressChange: (next: UserProgress) => void;
   isAdmin: boolean;
+  isGuest: boolean;
+  onRequireAuth: (mode: 'login' | 'register') => void;
   onBackToDashboard: () => void;
 }
 
@@ -57,6 +60,8 @@ export function StudyView({
   progress,
   onProgressChange,
   isAdmin,
+  isGuest,
+  onRequireAuth,
   onBackToDashboard
 }: StudyViewProps) {
   const [shuffleSeed, setShuffleSeed] = useState(0);
@@ -169,8 +174,14 @@ export function StudyView({
 
   async function handleCheckAnswer() {
     if (!activeQuestion || selectedOptions.length === 0 || submittingAnswer) return;
-    setSubmittingAnswer(true);
     const isCorrect = areAnswerSetsEqual(selectedOptions, activeQuestion.correctAnswers);
+
+    if (isGuest) {
+      setCheckedResult({ isCorrect, clearedFromMistakes: false });
+      return;
+    }
+
+    setSubmittingAnswer(true);
     const hadMistakeBefore = activeQuestion.id in progress.mistakeStreaks;
 
     try {
@@ -194,14 +205,14 @@ export function StudyView({
   }
 
   async function handleToggleLecturer() {
-    if (!activeQuestion) return;
+    if (isGuest || !activeQuestion) return;
     const updated = await toggleAskLecturer(progress, activeQuestion.id);
     onProgressChange(updated);
   }
 
   async function handleSavePrivateNote(e: FormEvent) {
     e.preventDefault();
-    if (!activeQuestion || savingNote) return;
+    if (isGuest || !activeQuestion || savingNote) return;
     setSavingNote(true);
     try {
       const updated = await savePrivateNote(progress, activeQuestion.id, privateNoteDraft);
@@ -215,7 +226,7 @@ export function StudyView({
 
   async function handlePostComment(e: FormEvent) {
     e.preventDefault();
-    if (!activeQuestion || !commentDraft.trim() || postingComment) return;
+    if (isGuest || !activeQuestion || !commentDraft.trim() || postingComment) return;
     setPostingComment(true);
     try {
       await addCommentForQuestion(
@@ -233,7 +244,7 @@ export function StudyView({
   }
 
   async function handleDeleteComment(commentId: string) {
-    if (!activeQuestion) return;
+    if (isGuest || !activeQuestion) return;
     await deleteComment(commentId);
     setComments((prev) => prev.filter((c) => c.id !== commentId));
   }
@@ -255,6 +266,47 @@ export function StudyView({
   const currentMistakeStreak = activeQuestion
     ? progress.mistakeStreaks[activeQuestion.id]
     : undefined;
+
+  if (isGuest && (mode === 'mistakes' || mode === 'lecturer')) {
+    return (
+      <div className="mx-auto max-w-xl rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
+        <Lock className="mx-auto h-9 w-9 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+        <h1 className="font-display mt-3 text-xl font-bold text-slate-900 dark:text-white">
+          {mode === 'mistakes'
+            ? 'Tryb „Powtórka błędów” wymaga darmowego konta'
+            : 'Lista „Do zapytania wykładowcy” wymaga darmowego konta'}
+        </h1>
+        <p className="mx-auto mt-2 max-w-md text-sm text-slate-600 dark:text-slate-300">
+          {mode === 'mistakes'
+            ? 'W trybie gościa Twoje odpowiedzi nie są zapisywane. Załóż konto, aby aplikacja automatycznie zbierała błędne pytania i usuwała je po 2 poprawnych odpowiedziach z rzędu.'
+            : 'Zaloguj się lub załóż darmowe konto, aby oznaczać trudne pytania i tworzyć prywatną listę na zajęcia z wykładowcą.'}
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => onRequireAuth('register')}
+            className="cursor-pointer rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
+          >
+            Załóż darmowe konto
+          </button>
+          <button
+            type="button"
+            onClick={() => onRequireAuth('login')}
+            className="cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            Zaloguj się
+          </button>
+          <button
+            type="button"
+            onClick={onBackToDashboard}
+            className="cursor-pointer rounded-lg px-3 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+          >
+            Wróć do pulpitu
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -497,7 +549,9 @@ export function StudyView({
                       <p className="font-semibold">
                         {checkedResult.isCorrect
                           ? 'Poprawna odpowiedź!'
-                          : 'Odpowiedź błędna — pytanie dodano do puli „Powtórka błędów”.'}
+                          : isGuest
+                            ? 'Odpowiedź błędna (w trybie gościa błędy nie są zapisywane do powtórki).'
+                            : 'Odpowiedź błędna — pytanie dodano do puli „Powtórka błędów”.'}
                       </p>
                       {checkedResult.clearedFromMistakes && (
                         <p className="mt-1 text-xs font-medium">
@@ -521,35 +575,51 @@ export function StudyView({
               {/* Pasek akcji pytania */}
               <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 dark:border-slate-800">
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={handleToggleLecturer}
-                    className={`flex h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-colors ${
-                      isFlaggedForLecturer
-                        ? 'border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
-                        : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
-                    }`}
-                  >
-                    {isFlaggedForLecturer ? (
-                      <BookmarkCheck className="h-4 w-4" aria-hidden="true" />
-                    ) : (
-                      <BookmarkPlus className="h-4 w-4" aria-hidden="true" />
-                    )}
-                    <span>
-                      {isFlaggedForLecturer
-                        ? 'Zapisane do zapytania wykładowcy'
-                        : 'Trafione fartem / Zapytaj wykładowcy'}
-                    </span>
-                  </button>
+                  {isGuest ? (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      <span>Zapis pytań dla wykładowcy i zgłaszanie błędów po zalogowaniu.</span>
+                      <button
+                        type="button"
+                        onClick={() => onRequireAuth('login')}
+                        className="cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                      >
+                        Zaloguj się
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={handleToggleLecturer}
+                        className={`flex h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                          isFlaggedForLecturer
+                            ? 'border-amber-400 bg-amber-50 text-amber-800 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-300'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        {isFlaggedForLecturer ? (
+                          <BookmarkCheck className="h-4 w-4" aria-hidden="true" />
+                        ) : (
+                          <BookmarkPlus className="h-4 w-4" aria-hidden="true" />
+                        )}
+                        <span>
+                          {isFlaggedForLecturer
+                            ? 'Zapisane do zapytania wykładowcy'
+                            : 'Trafione fartem / Zapytaj wykładowcy'}
+                        </span>
+                      </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setReportModalOpen(true)}
-                    className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-                  >
-                    <Flag className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>Zgłoś błąd w pytaniu</span>
-                  </button>
+                      <button
+                        type="button"
+                        onClick={() => setReportModalOpen(true)}
+                        className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                      >
+                        <Flag className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Zgłoś błąd w pytaniu</span>
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -611,29 +681,44 @@ export function StudyView({
                 <StickyNote className="h-4 w-4 text-blue-600 dark:text-blue-400" aria-hidden="true" />
                 <h3 className="font-display text-sm font-bold">Twoja prywatna notatka</h3>
               </div>
-              <form onSubmit={handleSavePrivateNote} className="space-y-2.5">
-                <textarea
-                  rows={3}
-                  maxLength={2000}
-                  value={privateNoteDraft}
-                  onChange={(e) => setPrivateNoteDraft(e.target.value)}
-                  placeholder="Zapisz własne skojarzenie lub przypomnienie (widoczne tylko dla Ciebie)..."
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:bg-slate-950"
-                />
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-emerald-700 dark:text-emerald-400">
-                    {noteSavedMsg ? 'Zapisano notatkę' : ''}
-                  </span>
+              {isGuest ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                  <p className="leading-relaxed">
+                    Prywatne notatki do pytań są zapisywane na koncie kursanta. Zaloguj się lub utwórz darmowe konto, aby z nich korzystać.
+                  </p>
                   <button
-                    type="submit"
-                    disabled={savingNote}
-                    className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    type="button"
+                    onClick={() => onRequireAuth('register')}
+                    className="mt-2.5 cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
                   >
-                    <Save className="h-3.5 w-3.5" aria-hidden="true" />
-                    <span>{savingNote ? 'Zapisywanie...' : 'Zapisz notatkę'}</span>
+                    Załóż darmowe konto →
                   </button>
                 </div>
-              </form>
+              ) : (
+                <form onSubmit={handleSavePrivateNote} className="space-y-2.5">
+                  <textarea
+                    rows={3}
+                    maxLength={2000}
+                    value={privateNoteDraft}
+                    onChange={(e) => setPrivateNoteDraft(e.target.value)}
+                    placeholder="Zapisz własne skojarzenie lub przypomnienie (widoczne tylko dla Ciebie)..."
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white dark:focus:bg-slate-950"
+                  />
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-emerald-700 dark:text-emerald-400">
+                      {noteSavedMsg ? 'Zapisano notatkę' : ''}
+                    </span>
+                    <button
+                      type="submit"
+                      disabled={savingNote}
+                      className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                    >
+                      <Save className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>{savingNote ? 'Zapisywanie...' : 'Zapisz notatkę'}</span>
+                    </button>
+                  </div>
+                </form>
+              )}
             </section>
 
             {/* Wspólne notatki grupy (kolekcja comments) */}
@@ -648,26 +733,39 @@ export function StudyView({
                 </span>
               </div>
 
-              <form onSubmit={handlePostComment} className="mb-4 space-y-2">
-                <textarea
-                  rows={2}
-                  maxLength={1500}
-                  value={commentDraft}
-                  onChange={(e) => setCommentDraft(e.target.value)}
-                  placeholder="Podziel się wskazówką lub podstawą prawną z innymi kursantami..."
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-                />
-                <div className="flex justify-end">
+              {isGuest ? (
+                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                  <p>Dodawanie komentarzy wymaga zalogowania. Możesz czytać wpisy innych kursantów poniżej.</p>
                   <button
-                    type="submit"
-                    disabled={postingComment || !commentDraft.trim()}
-                    className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-blue-600"
+                    type="button"
+                    onClick={() => onRequireAuth('login')}
+                    className="mt-1.5 cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
                   >
-                    {postingComment && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                    <span>Dodaj komentarz</span>
+                    Zaloguj się, aby dodać komentarz →
                   </button>
                 </div>
-              </form>
+              ) : (
+                <form onSubmit={handlePostComment} className="mb-4 space-y-2">
+                  <textarea
+                    rows={2}
+                    maxLength={1500}
+                    value={commentDraft}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    placeholder="Podziel się wskazówką lub podstawą prawną z innymi kursantami..."
+                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={postingComment || !commentDraft.trim()}
+                      className="flex h-8 cursor-pointer items-center gap-1.5 rounded-md bg-blue-700 px-3 text-xs font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-blue-600"
+                    >
+                      {postingComment && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                      <span>Dodaj komentarz</span>
+                    </button>
+                  </div>
+                </form>
+              )}
 
               {loadingComments ? (
                 <div className="flex items-center gap-2 py-4 text-xs text-slate-500 dark:text-slate-400">
@@ -676,12 +774,12 @@ export function StudyView({
                 </div>
               ) : comments.length === 0 ? (
                 <p className="py-2 text-xs text-slate-500 dark:text-slate-400">
-                  Brak komentarzy pod tym pytaniem. Bądź pierwszą osobą!
+                  Brak komentarzy pod tym pytaniem.{isGuest ? '' : ' Bądź pierwszą osobą!'}
                 </p>
               ) : (
                 <ul className="max-h-72 space-y-3 overflow-y-auto pr-1">
                   {comments.map((comment) => {
-                    const canDelete = comment.authorUid === progress.uid || isAdmin;
+                    const canDelete = !isGuest && (comment.authorUid === progress.uid || isAdmin);
                     return (
                       <li
                         key={comment.id}

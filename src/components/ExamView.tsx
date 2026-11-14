@@ -30,6 +30,8 @@ interface ExamViewProps {
   categories: string[];
   defaultCategory: string;
   progress: UserProgress;
+  isGuest: boolean;
+  onRequireAuth: (mode: 'login' | 'register') => void;
   onProgressChange: (next: UserProgress) => void;
   onBackToDashboard: () => void;
 }
@@ -58,6 +60,8 @@ export function ExamView({
   categories,
   defaultCategory,
   progress,
+  isGuest,
+  onRequireAuth,
   onProgressChange,
   onBackToDashboard
 }: ExamViewProps) {
@@ -115,7 +119,7 @@ export function ExamView({
     setStage('results');
 
     const total = examQuestions.length;
-    if (total === 0) return;
+    if (isGuest || total === 0) return;
 
     let score = 0;
     const mistakeIds: string[] = [];
@@ -157,7 +161,7 @@ export function ExamView({
     } catch (err) {
       console.error('Nie udało się zapisać wyniku egzaminu:', err);
     }
-  }, [stage, examQuestions, answersMap, mode, chosenCategory, progress, onProgressChange]);
+  }, [stage, isGuest, examQuestions, answersMap, mode, chosenCategory, progress, onProgressChange]);
 
   // Odliczanie czasu podczas testu
   useEffect(() => {
@@ -285,7 +289,9 @@ export function ExamView({
           </div>
 
           <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-            Zasada punktacji: punkt przyznawany jest wyłącznie za zaznaczenie wszystkich poprawnych odpowiedzi i ani jednej błędnej. Błędne odpowiedzi z egzaminu automatycznie trafiają do Twojej puli „Powtórka błędów”.
+            {isGuest
+              ? 'Zasada punktacji: punkt przyznawany jest wyłącznie za zaznaczenie wszystkich poprawnych odpowiedzi i ani jednej błędnej. W trybie gościa wynik testu nie jest zapisywany w historii.'
+              : 'Zasada punktacji: punkt przyznawany jest wyłącznie za zaznaczenie wszystkich poprawnych odpowiedzi i ani jednej błędnej. Błędne odpowiedzi z egzaminu automatycznie trafiają do Twojej puli „Powtórka błędów”.'}
           </p>
 
           <button
@@ -419,6 +425,21 @@ export function ExamView({
           </div>
         </div>
 
+        {isGuest && (
+          <div className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 bg-white px-5 py-3.5 text-xs text-slate-700 sm:flex-row sm:items-center dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+            <span>
+              Tryb gościa — wynik tego egzaminu oraz błędne odpowiedzi nie zostały zapisane w historii ani rankingu.
+            </span>
+            <button
+              type="button"
+              onClick={() => onRequireAuth('register')}
+              className="shrink-0 cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+            >
+              Załóż darmowe konto →
+            </button>
+          </div>
+        )}
+
         {/* Przegląd błędów */}
         <section className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -482,14 +503,16 @@ export function ExamView({
                         )}
                         {isCorrect ? 'Poprawna' : 'Błędna'}
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => setReportTarget(q)}
-                        className="flex cursor-pointer items-center gap-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
-                      >
-                        <Flag className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Zgłoś błąd</span>
-                      </button>
+                      {!isGuest && (
+                        <button
+                          type="button"
+                          onClick={() => setReportTarget(q)}
+                          className="flex cursor-pointer items-center gap-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                        >
+                          <Flag className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Zgłoś błąd</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 

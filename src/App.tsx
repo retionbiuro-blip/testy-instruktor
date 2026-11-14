@@ -1,5 +1,5 @@
 import { User, onAuthStateChanged, signOut } from 'firebase/auth';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, Info, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { AdminPanel } from './components/AdminPanel';
 import { AuthScreen } from './components/AuthScreen';
@@ -19,11 +19,29 @@ import {
 } from './services/firestoreService';
 import { AppView, LeaderboardEntry, Question, ReportItem, UserProgress } from './types';
 
+const GUEST_PROGRESS: UserProgress = {
+  uid: 'guest',
+  nick: 'Gość',
+  email: '',
+  masteredIds: [],
+  mistakeStreaks: {},
+  askLecturerIds: [],
+  privateNotes: {},
+  totalAnswered: 0,
+  totalCorrect: 0,
+  streakDays: 0,
+  lastStudyDate: undefined,
+  points: 0,
+  examHistory: []
+};
+
 export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => getStoredTheme());
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [pendingNick, setPendingNick] = useState<string | undefined>(undefined);
+  const [isGuest, setIsGuest] = useState(false);
+  const [authInitialMode, setAuthInitialMode] = useState<'login' | 'register'>('login');
 
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES_KEY);
@@ -55,7 +73,9 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setAuthUser(user);
       setAuthReady(true);
-      if (!user) {
+      if (user) {
+        setIsGuest(false);
+      } else {
         setProgress(null);
         setCurrentView('dashboard');
       }
@@ -103,29 +123,61 @@ export default function App() {
     []
   );
 
-  useEffect(() => {
-    if (!authReady || !authUser) return;
-    void bootstrapAppData(authUser, isAdmin, pendingNick);
-  }, [authReady, authUser, isAdmin, pendingNick, bootstrapAppData]);
-
-  const handleRefreshSync = useCallback(async () => {
-    if (!authUser || syncing) return;
-    setSyncing(true);
+  // Inicjalizacja pytań w trybie gościa (1 odczyt system/metadata + cache IndexedDB)
+  const bootstrapGuestData = useCallback(async () => {
+    setLoadingData(true);
+    setAppError(null);
     try {
-      const [syncRes, board] = await Promise.all([
-        syncQuestionsWithCache(isAdmin, false),
-        fetchLeaderboard()
-      ]);
+      await testFirestoreConnection();
+      const syncRes = await syncQuestionsWithCache(false, false);
       setQuestions(syncRes.questions);
       setCategories(syncRes.metadata.categories);
       setDbVersion(syncRes.metadata.dbVersion);
-      setLeaderboard(board);
+    } catch (err) {
+      console.error('Błąd ładowania pytań w trybie gościa:', err);
+      setAppError(
+        'Nie udało się pobrać bazy pytań z Firestore. Upewnij się, że w konsoli Firebase wdrożono aktualne reguły bezpieczeństwa (firestore.rules).'
+      );
+    } finally {
+      setLoadingData(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!authReady) return;
+    if (authUser) {
+      void bootstrapAppData(authUser, isAdmin, pendingNick);
+    } else if (isGuest) {
+      void bootstrapGuestData();
+    }
+  }, [authReady, authUser, isGuest, isAdmin, pendingNick, bootstrapAppData, bootstrapGuestData]);
+
+  const handleRefreshSync = useCallback(async () => {
+    if ((!authUser && !isGuest) || syncing) return;
+    setSyncing(true);
+    try {
+      if (isGuest) {
+        const syncRes = await syncQuestionsWithCache(false, false);
+        setQuestions(syncRes.questions);
+        setCategories(syncRes.metadata.categories);
+        setDbVersion(syncRes.metadata.dbVersion);
+      } else {
+        const [syncRes, board] = await Promise.all([
+          syncQuestionsWithCache(isAdmin, false),
+          fetchLeaderboard()
+        ]);
+        setQuestions(syncRes.questions);
+        setCategories(syncRes.metadata.categories);
+        setDbVersion(syncRes.metadata.dbVersion);
+        setLeaderboard(board);
+      }
     } finally {
       setSyncing(false);
     }
-  }, [authUser, isAdmin, syncing]);
+  }, [authUser, isGuest, isAdmin, syncing]);
 
   const handleRefreshLeaderboard = useCallback(async () => {
+    if (isGuest) return;
     setLoadingLeaderboard(true);
     try {
       const board = await fetchLeaderboard();
@@ -133,7 +185,7 @@ export default function App() {
     } finally {
       setLoadingLeaderboard(false);
     }
-  }, []);
+  }, [isGuest]);
 
   const handleRefreshReports = useCallback(async () => {
     if (!isAdmin) return;
@@ -145,12 +197,12 @@ export default function App() {
     (view: AppView) => {
       if (view === 'admin' && !isAdmin) return;
       setCurrentView(view);
-      if (view === 'leaderboard' || view === 'dashboard') {
+      if (!isGuest && (view === 'leaderboard' || view === 'dashboard')) {
         void handleRefreshLeaderboard();
       }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [isAdmin, handleRefreshLeaderboard]
+    [isAdmin, isGuest, handleRefreshLeaderboard]
   );
 
   const handleStartMode = useCallback(
@@ -163,8 +215,14 @@ export default function App() {
     [handleNavigate]
   );
 
+  const handleRequireAuth = useCallback((mode: 'login' | 'register') => {
+    setAuthInitialMode(mode);
+    setIsGuest(false);
+  }, []);
+
   const handleLogout = useCallback(async () => {
     setPendingNick(undefined);
+    setIsGuest(false);
     await signOut(auth);
   }, []);
 
@@ -181,17 +239,24 @@ export default function App() {
   }
 
   // Ekran logowania i rejestracji
-  if (!authUser) {
+  if (!authUser && !isGuest) {
     return (
       <AuthScreen
         theme={theme}
         onToggleTheme={toggleTheme}
         onRegisteredNick={(nick) => setPendingNick(nick)}
+        initialMode={authInitialMode}
+        onContinueAsGuest={() => {
+          setIsGuest(true);
+          setCurrentView('dashboard');
+        }}
       />
     );
   }
 
-  const mistakesCount = progress ? Object.keys(progress.mistakeStreaks).length : 0;
+  const guestModeActive = !authUser && isGuest;
+  const activeProgress = guestModeActive ? GUEST_PROGRESS : progress;
+  const mistakesCount = activeProgress ? Object.keys(activeProgress.mistakeStreaks).length : 0;
   const openReportsCount = reports.filter((r) => r.status === 'open').length;
 
   return (
@@ -199,14 +264,40 @@ export default function App() {
       <Navbar
         currentView={currentView}
         onNavigate={handleNavigate}
-        nick={progress?.nick ?? authUser.displayName ?? 'Kursant'}
+        nick={activeProgress?.nick ?? authUser?.displayName ?? 'Kursant'}
         isAdmin={isAdmin}
+        isGuest={guestModeActive}
         theme={theme}
         onToggleTheme={toggleTheme}
         onLogout={handleLogout}
+        onSwitchToAuth={() => handleRequireAuth('login')}
         mistakesCount={mistakesCount}
         openReportsCount={openReportsCount}
       />
+
+      {guestModeActive && (
+        <div
+          role="region"
+          aria-label="Informacja o trybie gościa"
+          className="border-b border-amber-200 bg-amber-50/90 px-4 py-2.5 text-xs text-amber-950 sm:px-6 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+        >
+          <div className="mx-auto flex max-w-7xl flex-col justify-between gap-2 sm:flex-row sm:items-center">
+            <div className="flex items-start gap-2 sm:items-center">
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 sm:mt-0 dark:text-amber-400" aria-hidden="true" />
+              <span>
+                Korzystasz z trybu gościa — Twoje postępy, powtórka błędów i punkty w rankingu nie są zapisywane. Załóż darmowe konto, aby śledzić naukę.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleRequireAuth('register')}
+              className="shrink-0 cursor-pointer self-start rounded-md bg-amber-900 px-3 py-1.5 text-xs font-semibold text-white whitespace-nowrap transition-colors hover:bg-amber-800 sm:self-auto dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
+            >
+              Załóż darmowe konto
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
         {appError && (
@@ -222,11 +313,13 @@ export default function App() {
           </div>
         )}
 
-        {loadingData || !progress ? (
+        {loadingData || !activeProgress ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-slate-200 bg-white py-20 dark:border-slate-800 dark:bg-slate-900">
             <Loader2 className="h-7 w-7 animate-spin text-blue-700 dark:text-blue-400" />
             <p className="mt-3 text-sm font-medium text-slate-600 dark:text-slate-300">
-              Synchronizowanie bazy pytań i Twoich postępów...
+              {guestModeActive
+                ? 'Synchronizowanie bazy pytań...'
+                : 'Synchronizowanie bazy pytań i Twoich postępów...'}
             </p>
           </div>
         ) : (
@@ -235,12 +328,14 @@ export default function App() {
               <DashboardView
                 questions={questions}
                 categories={categories}
-                progress={progress}
+                progress={activeProgress}
                 leaderboard={leaderboard}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
                 onStartMode={handleStartMode}
                 isAdmin={isAdmin}
+                isGuest={guestModeActive}
+                onRequireAuth={handleRequireAuth}
                 dbVersion={dbVersion}
                 onRefreshSync={handleRefreshSync}
                 syncing={syncing}
@@ -256,9 +351,11 @@ export default function App() {
                 categories={categories}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
-                progress={progress}
+                progress={activeProgress}
                 onProgressChange={setProgress}
                 isAdmin={isAdmin}
+                isGuest={guestModeActive}
+                onRequireAuth={handleRequireAuth}
                 onBackToDashboard={() => handleNavigate('dashboard')}
               />
             )}
@@ -269,7 +366,9 @@ export default function App() {
                 questions={questions}
                 categories={categories}
                 defaultCategory={selectedCategory}
-                progress={progress}
+                progress={activeProgress}
+                isGuest={guestModeActive}
+                onRequireAuth={handleRequireAuth}
                 onProgressChange={setProgress}
                 onBackToDashboard={() => handleNavigate('dashboard')}
               />
@@ -278,7 +377,9 @@ export default function App() {
             {currentView === 'leaderboard' && (
               <LeaderboardView
                 entries={leaderboard}
-                progress={progress}
+                progress={activeProgress}
+                isGuest={guestModeActive}
+                onRequireAuth={handleRequireAuth}
                 onRefresh={handleRefreshLeaderboard}
                 loading={loadingLeaderboard}
               />

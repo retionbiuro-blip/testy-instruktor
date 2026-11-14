@@ -1,4 +1,4 @@
-import { LogOut, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { LogIn, LogOut, Moon, ShieldCheck, Sun } from 'lucide-react';
 import { AppView } from '../types';
 
 interface NavbarProps {
@@ -6,9 +6,11 @@ interface NavbarProps {
   onNavigate: (view: AppView) => void;
   nick: string;
   isAdmin: boolean;
+  isGuest: boolean;
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   onLogout: () => void;
+  onSwitchToAuth: () => void;
   mistakesCount: number;
   openReportsCount: number;
 }
@@ -18,9 +20,11 @@ export function Navbar({
   onNavigate,
   nick,
   isAdmin,
+  isGuest,
   theme,
   onToggleTheme,
   onLogout,
+  onSwitchToAuth,
   mistakesCount,
   openReportsCount
 }: NavbarProps) {
@@ -97,7 +101,7 @@ export function Navbar({
           {/* Strefa 3: Główna akcja i przełącznik motywu */}
           <div className="flex shrink-0 items-center gap-3">
             <span className="hidden max-w-[140px] truncate text-sm font-medium text-slate-700 sm:inline dark:text-slate-300">
-              {nick}
+              {isGuest ? 'Gość' : nick}
             </span>
             <button
               type="button"
@@ -108,14 +112,25 @@ export function Navbar({
             >
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
-            <button
-              type="button"
-              onClick={onLogout}
-              className="flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 whitespace-nowrap transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-            >
-              <LogOut className="h-4 w-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Wyloguj</span>
-            </button>
+            {isGuest ? (
+              <button
+                type="button"
+                onClick={onSwitchToAuth}
+                className="flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg bg-blue-700 px-3.5 text-sm font-semibold text-white whitespace-nowrap transition-colors hover:bg-blue-800 focus-visible:outline-2 focus-visible:outline-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500"
+              >
+                <LogIn className="h-4 w-4" aria-hidden="true" />
+                <span>Zaloguj się</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onLogout}
+                className="flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 whitespace-nowrap transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <LogOut className="h-4 w-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Wyloguj</span>
+              </button>
+            )}
           </div>
         </div>
       </header>

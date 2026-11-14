@@ -5,6 +5,7 @@ import {
   ClipboardCheck,
   Flame,
   HelpCircle,
+  Lock,
   RefreshCw,
   RotateCcw,
   ShieldCheck,
@@ -23,6 +24,8 @@ interface DashboardViewProps {
   onSelectCategory: (cat: string) => void;
   onStartMode: (view: AppView, category?: string) => void;
   isAdmin: boolean;
+  isGuest: boolean;
+  onRequireAuth: (mode: 'login' | 'register') => void;
   dbVersion: number;
   onRefreshSync: () => void;
   syncing: boolean;
@@ -37,6 +40,8 @@ export function DashboardView({
   onSelectCategory,
   onStartMode,
   isAdmin,
+  isGuest,
+  onRequireAuth,
   dbVersion,
   onRefreshSync,
   syncing
@@ -77,10 +82,10 @@ export function DashboardView({
       <section className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end dark:border-slate-800">
         <div>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Pulpit kursanta · Wersja bazy {dbVersion} · {totalQuestions} pytań w pamięci lokalnej
+            {isGuest ? 'Tryb gościa' : 'Pulpit kursanta'} · Wersja bazy {dbVersion} · {totalQuestions} pytań w pamięci lokalnej
           </p>
           <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">
-            Witaj, {progress.nick}
+            {isGuest ? 'Witaj w trybie gościa' : `Witaj, ${progress.nick}`}
           </h1>
         </div>
 
@@ -108,60 +113,86 @@ export function DashboardView({
         </div>
       </section>
 
-      {/* Pasek kluczowych statystyk (4 kolumny, liczby tabularne) */}
-      <section aria-label="Podsumowanie postępów" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Opanowane pytania</span>
-            <Target className="h-4 w-4 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+      {/* Pasek kluczowych statystyk (dla zalogowanych) lub zaproszenie do konta (dla gościa) */}
+      {isGuest ? (
+        <section
+          aria-label="Informacja o statystykach w trybie gościa"
+          className="flex flex-col justify-between gap-4 rounded-xl border border-slate-200 bg-white p-5 sm:flex-row sm:items-center dark:border-slate-800 dark:bg-slate-900"
+        >
+          <div className="flex items-start gap-3">
+            <Lock className="mt-0.5 h-5 w-5 shrink-0 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+            <div>
+              <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                Statystyki postępów, passa dni i punkty są wyłączone w trybie gościa
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+                Możesz swobodnie uczyć się z pytań i rozwiązywać egzaminy. Załóż darmowe konto, aby zapisywać wyniki i powtarzać błędy.
+              </p>
+            </div>
           </div>
-          <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
-            {masteredTotal} <span className="text-sm font-normal text-slate-500">/ {totalQuestions}</span>
-          </p>
-          <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-            {overallMasteryPct}% całej bazy
-          </p>
-        </div>
+          <button
+            type="button"
+            onClick={() => onRequireAuth('register')}
+            className="shrink-0 cursor-pointer rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white whitespace-nowrap hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+          >
+            Załóż darmowe konto
+          </button>
+        </section>
+      ) : (
+        <section aria-label="Podsumowanie postępów" className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>Opanowane pytania</span>
+              <Target className="h-4 w-4 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+            </div>
+            <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
+              {masteredTotal} <span className="text-sm font-normal text-slate-500">/ {totalQuestions}</span>
+            </p>
+            <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+              {overallMasteryPct}% całej bazy
+            </p>
+          </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Ogólna skuteczność</span>
-            <ClipboardCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+          <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>Ogólna skuteczność</span>
+              <ClipboardCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
+            </div>
+            <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
+              {accuracy}%
+            </p>
+            <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+              {progress.totalCorrect} poprawnych z {progress.totalAnswered}
+            </p>
           </div>
-          <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
-            {accuracy}%
-          </p>
-          <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-            {progress.totalCorrect} poprawnych z {progress.totalAnswered}
-          </p>
-        </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Dni nauki z rzędu</span>
-            <Flame className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>Dni nauki z rzędu</span>
+              <Flame className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+            </div>
+            <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
+              {progress.streakDays} {progress.streakDays === 1 ? 'dzień' : 'dni'}
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              {progress.lastStudyDate ? `Ostatnia sesja: ${progress.lastStudyDate}` : 'Rozwiąż pierwsze pytanie'}
+            </p>
           </div>
-          <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
-            {progress.streakDays} {progress.streakDays === 1 ? 'dzień' : 'dni'}
-          </p>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            {progress.lastStudyDate ? `Ostatnia sesja: ${progress.lastStudyDate}` : 'Rozwiąż pierwsze pytanie'}
-          </p>
-        </div>
 
-        <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
-            <span>Zdobyte punkty</span>
-            <Award className="h-4 w-4 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+          <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
+              <span>Zdobyte punkty</span>
+              <Award className="h-4 w-4 text-blue-600 dark:text-blue-400" aria-hidden="true" />
+            </div>
+            <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
+              {progress.points} <span className="text-sm font-normal text-slate-500">pkt</span>
+            </p>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Do rankingu grupy
+            </p>
           </div>
-          <p className="font-mono mt-2 text-2xl font-bold text-slate-900 tabular-nums dark:text-white">
-            {progress.points} <span className="text-sm font-normal text-slate-500">pkt</span>
-          </p>
-          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Do rankingu grupy
-          </p>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Pusty stan, gdy w bazie nie ma jeszcze żadnych pytań */}
       {totalQuestions === 0 && (
@@ -193,14 +224,25 @@ export function DashboardView({
           <button
             type="button"
             onClick={() => onStartMode('mistakes')}
-            className="flex cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 text-left transition-colors hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-600"
+            className={`flex cursor-pointer flex-col justify-between rounded-xl border p-5 text-left transition-colors ${
+              isGuest
+                ? 'border-slate-200 bg-slate-50/70 opacity-85 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900/60 dark:hover:border-slate-700'
+                : 'border-slate-200 bg-white hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-600'
+            }`}
           >
             <div>
               <div className="flex items-center justify-between">
                 <RotateCcw className="h-5 w-5 text-red-600 dark:text-red-400" aria-hidden="true" />
-                <span className="font-mono text-sm font-bold text-slate-900 tabular-nums dark:text-white">
-                  {mistakesCount}
-                </span>
+                {isGuest ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Wymaga konta</span>
+                  </span>
+                ) : (
+                  <span className="font-mono text-sm font-bold text-slate-900 tabular-nums dark:text-white">
+                    {mistakesCount}
+                  </span>
+                )}
               </div>
               <h2 className="font-display mt-3 text-base font-bold text-slate-900 dark:text-white">
                 Powtórka błędów
@@ -210,7 +252,7 @@ export function DashboardView({
               </p>
             </div>
             <span className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 dark:text-blue-400">
-              <span>Ćwicz błędy</span>
+              <span>{isGuest ? 'Zaloguj się, aby odblokować' : 'Ćwicz błędy'}</span>
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           </button>
@@ -218,14 +260,25 @@ export function DashboardView({
           <button
             type="button"
             onClick={() => onStartMode('lecturer')}
-            className="flex cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 text-left transition-colors hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-600"
+            className={`flex cursor-pointer flex-col justify-between rounded-xl border p-5 text-left transition-colors ${
+              isGuest
+                ? 'border-slate-200 bg-slate-50/70 opacity-85 hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900/60 dark:hover:border-slate-700'
+                : 'border-slate-200 bg-white hover:border-blue-400 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-600'
+            }`}
           >
             <div>
               <div className="flex items-center justify-between">
                 <HelpCircle className="h-5 w-5 text-amber-600 dark:text-amber-400" aria-hidden="true" />
-                <span className="font-mono text-sm font-bold text-slate-900 tabular-nums dark:text-white">
-                  {lecturerCount}
-                </span>
+                {isGuest ? (
+                  <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                    <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Wymaga konta</span>
+                  </span>
+                ) : (
+                  <span className="font-mono text-sm font-bold text-slate-900 tabular-nums dark:text-white">
+                    {lecturerCount}
+                  </span>
+                )}
               </div>
               <h2 className="font-display mt-3 text-base font-bold text-slate-900 dark:text-white">
                 Do zapytania wykładowcy
@@ -235,7 +288,7 @@ export function DashboardView({
               </p>
             </div>
             <span className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-blue-700 dark:text-blue-400">
-              <span>Przejrzyj listę</span>
+              <span>{isGuest ? 'Zaloguj się, aby odblokować' : 'Przejrzyj listę'}</span>
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           </button>
@@ -329,17 +382,23 @@ export function DashboardView({
                     </span>
                   )}
                 </div>
-                <div className="mt-2 flex items-center gap-3">
-                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                    <div
-                      className="h-full bg-blue-700 transition-all dark:bg-blue-500"
-                      style={{ width: `${overallMasteryPct}%` }}
-                    />
+                {isGuest ? (
+                  <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                    {totalQuestions} pytań w puli
+                  </p>
+                ) : (
+                  <div className="mt-2 flex items-center gap-3">
+                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                      <div
+                        className="h-full bg-blue-700 transition-all dark:bg-blue-500"
+                        style={{ width: `${overallMasteryPct}%` }}
+                      />
+                    </div>
+                    <span className="font-mono w-24 text-right text-xs text-slate-600 tabular-nums dark:text-slate-300">
+                      {masteredTotal}/{totalQuestions} ({overallMasteryPct}%)
+                    </span>
                   </div>
-                  <span className="font-mono w-24 text-right text-xs text-slate-600 tabular-nums dark:text-slate-300">
-                    {masteredTotal}/{totalQuestions} ({overallMasteryPct}%)
-                  </span>
-                </div>
+                )}
               </button>
 
               {totalQuestions > 0 && (
@@ -379,17 +438,23 @@ export function DashboardView({
                         </span>
                       )}
                     </div>
-                    <div className="mt-2 flex items-center gap-3">
-                      <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                        <div
-                          className="h-full bg-emerald-600 transition-all dark:bg-emerald-500"
-                          style={{ width: `${cat.pct}%` }}
-                        />
+                    {isGuest ? (
+                      <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                        {cat.total} pytań
+                      </p>
+                    ) : (
+                      <div className="mt-2 flex items-center gap-3">
+                        <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                          <div
+                            className="h-full bg-emerald-600 transition-all dark:bg-emerald-500"
+                            style={{ width: `${cat.pct}%` }}
+                          />
+                        </div>
+                        <span className="font-mono w-24 text-right text-xs text-slate-600 tabular-nums dark:text-slate-300">
+                          {cat.mastered}/{cat.total} ({cat.pct}%)
+                        </span>
                       </div>
-                      <span className="font-mono w-24 text-right text-xs text-slate-600 tabular-nums dark:text-slate-300">
-                        {cat.mastered}/{cat.total} ({cat.pct}%)
-                      </span>
-                    </div>
+                    )}
                   </button>
 
                   <button
@@ -412,17 +477,45 @@ export function DashboardView({
             <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
               Ranking uczestników kursu
             </h2>
-            <button
-              type="button"
-              onClick={() => onStartMode('leaderboard')}
-              className="cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
-            >
-              Pełny ranking
-            </button>
+            {!isGuest && (
+              <button
+                type="button"
+                onClick={() => onStartMode('leaderboard')}
+                className="cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
+              >
+                Pełny ranking
+              </button>
+            )}
           </div>
 
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-            {topLeaderboard.length === 0 ? (
+            {isGuest ? (
+              <div className="p-6 text-center">
+                <Lock className="mx-auto h-7 w-7 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+                <h3 className="font-display mt-2.5 text-sm font-bold text-slate-900 dark:text-white">
+                  Ranking dostępny po zalogowaniu
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                  Załóż darmowe konto, aby zbierać punkty, śledzić swoją pozycję w grupie i zapisywać historię egzaminów.
+                </p>
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onRequireAuth('register')}
+                    className="cursor-pointer rounded-lg bg-blue-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
+                  >
+                    Załóż darmowe konto
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onRequireAuth('login')}
+                    className="cursor-pointer rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    Zaloguj się
+                  </button>
+                </div>
+              </div>
+            ) : topLeaderboard.length === 0 ? (
               <div className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">
                 Brak zapisanych wyników w rankingu. Rozwiąż pierwsze pytania!
               </div>

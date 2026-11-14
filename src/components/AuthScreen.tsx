@@ -3,14 +3,16 @@ import {
   signInWithEmailAndPassword,
   updateProfile
 } from 'firebase/auth';
-import { AlertCircle, BookOpenCheck, Loader2, Moon, Sun } from 'lucide-react';
-import { FormEvent, useState } from 'react';
+import { AlertCircle, BookOpenCheck, Loader2, Moon, Sun, UserCheck } from 'lucide-react';
+import { FormEvent, useEffect, useState } from 'react';
 import { auth } from '../lib/firebase';
 
 interface AuthScreenProps {
   theme: 'light' | 'dark';
   onToggleTheme: () => void;
   onRegisteredNick: (nick: string) => void;
+  onContinueAsGuest: () => void;
+  initialMode?: 'login' | 'register';
 }
 
 function mapFirebaseAuthError(code: string): string {
@@ -36,13 +38,23 @@ function mapFirebaseAuthError(code: string): string {
   }
 }
 
-export function AuthScreen({ theme, onToggleTheme, onRegisteredNick }: AuthScreenProps) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+export function AuthScreen({
+  theme,
+  onToggleTheme,
+  onRegisteredNick,
+  onContinueAsGuest,
+  initialMode = 'login'
+}: AuthScreenProps) {
+  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [nick, setNick] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -243,6 +255,21 @@ export function AuthScreen({ theme, onToggleTheme, onRegisteredNick }: AuthScree
                 <span>{mode === 'login' ? 'Zaloguj się' : 'Załóż konto i rozpocznij naukę'}</span>
               </button>
             </form>
+
+            <div className="my-5 flex items-center gap-3">
+              <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+              <span className="text-xs font-medium text-slate-400">lub</span>
+              <div className="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
+            </div>
+
+            <button
+              type="button"
+              onClick={onContinueAsGuest}
+              className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-4 py-2.5 text-sm font-semibold text-slate-800 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:hover:bg-slate-800"
+            >
+              <UserCheck className="h-4 w-4 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+              <span>Kontynuuj jako gość (bez rejestracji)</span>
+            </button>
 
             <p className="mt-4 text-center text-xs text-slate-500 dark:text-slate-400">
               Rejestracja nie wymaga potwierdzania adresu e-mail — sesja pozostaje aktywna na urządzeniu.
