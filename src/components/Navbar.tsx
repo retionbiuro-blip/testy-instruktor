@@ -1,0 +1,154 @@
+import { LogOut, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { AppView } from '../types';
+
+interface NavbarProps {
+  currentView: AppView;
+  onNavigate: (view: AppView) => void;
+  nick: string;
+  isAdmin: boolean;
+  theme: 'light' | 'dark';
+  onToggleTheme: () => void;
+  onLogout: () => void;
+  mistakesCount: number;
+  openReportsCount: number;
+}
+
+export function Navbar({
+  currentView,
+  onNavigate,
+  nick,
+  isAdmin,
+  theme,
+  onToggleTheme,
+  onLogout,
+  mistakesCount,
+  openReportsCount
+}: NavbarProps) {
+  const navItems: { id: AppView; label: string; badge?: number }[] = [
+    { id: 'dashboard', label: 'Pulpit' },
+    { id: 'study', label: 'Nauka' },
+    { id: 'mistakes', label: 'Powtórka', badge: mistakesCount > 0 ? mistakesCount : undefined },
+    { id: 'exam', label: 'Egzamin' },
+    { id: 'leaderboard', label: 'Ranking' }
+  ];
+
+  if (isAdmin) {
+    navItems.push({
+      id: 'admin',
+      label: 'Panel Admina',
+      badge: openReportsCount > 0 ? openReportsCount : undefined
+    });
+  }
+
+  return (
+    <>
+      {/* Górna nawigacja zgodna z kontraktem 3 stref */}
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/95">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-8 px-4 py-3 sm:px-6">
+          {/* Strefa 1: Marka (pojedynczy element tekstowy) */}
+          <button
+            type="button"
+            onClick={() => onNavigate('dashboard')}
+            className="font-display shrink-0 cursor-pointer text-lg font-extrabold tracking-tight text-slate-900 whitespace-nowrap focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 dark:text-white"
+          >
+            InstruktorPro
+          </button>
+
+          {/* Strefa 2: Linki nawigacyjne na desktopie */}
+          <nav
+            aria-label="Nawigacja główna"
+            className="hidden items-center gap-6 md:flex"
+          >
+            {navItems.map((item) => {
+              const isActive =
+                currentView === item.id ||
+                (item.id === 'exam' && currentView === 'quick10') ||
+                (item.id === 'study' && currentView === 'lecturer');
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onNavigate(item.id)}
+                  className={`relative flex shrink-0 cursor-pointer items-center gap-1.5 py-1 text-sm font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-blue-600 ${
+                    isActive
+                      ? 'text-blue-700 dark:text-blue-400'
+                      : 'text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white'
+                  }`}
+                >
+                  {item.id === 'admin' && <ShieldCheck className="h-4 w-4" aria-hidden="true" />}
+                  <span>{item.label}</span>
+                  {item.badge !== undefined && (
+                    <span className="font-mono text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                      ({item.badge})
+                    </span>
+                  )}
+                  {isActive && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute right-0 -bottom-[13px] left-0 h-0.5 bg-blue-700 dark:bg-blue-400"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Strefa 3: Główna akcja i przełącznik motywu */}
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="hidden max-w-[140px] truncate text-sm font-medium text-slate-700 sm:inline dark:text-slate-300">
+              {nick}
+            </span>
+            <button
+              type="button"
+              onClick={onToggleTheme}
+              aria-label={theme === 'dark' ? 'Przełącz na tryb jasny' : 'Przełącz na tryb ciemny'}
+              title={theme === 'dark' ? 'Tryb jasny' : 'Tryb ciemny'}
+              className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
+            <button
+              type="button"
+              onClick={onLogout}
+              className="flex h-10 shrink-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 whitespace-nowrap transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <LogOut className="h-4 w-4" aria-hidden="true" />
+              <span className="hidden sm:inline">Wyloguj</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Kompaktowy pasek nawigacji mobilnej (poniżej 15% wysokości ekranu) */}
+      <nav
+        aria-label="Nawigacja mobilna"
+        className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-around border-t border-slate-200 bg-white/95 px-2 py-1.5 backdrop-blur-sm md:hidden dark:border-slate-800 dark:bg-slate-950/95"
+      >
+        {navItems.map((item) => {
+          const isActive =
+            currentView === item.id ||
+            (item.id === 'exam' && currentView === 'quick10') ||
+            (item.id === 'study' && currentView === 'lecturer');
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => onNavigate(item.id)}
+              className={`flex min-h-[44px] flex-1 cursor-pointer flex-col items-center justify-center rounded-md px-1 text-xs font-medium whitespace-nowrap transition-colors ${
+                isActive
+                  ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-400'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              <span className="truncate">
+                {item.id === 'admin' ? 'Admin' : item.label}
+                {item.badge !== undefined ? ` (${item.badge})` : ''}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+    </>
+  );
+}
