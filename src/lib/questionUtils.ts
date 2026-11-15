@@ -1,4 +1,4 @@
-import { ParsedQuestionInput } from '../types';
+import { ParsedQuestionInput, Question } from '../types';
 
 function normalizeHashPart(text: string): string {
   return text
@@ -85,29 +85,33 @@ export async function compressImageToBase64(file: File): Promise<{
     const testWebp = canvas.toDataURL('image/webp', 0.8);
     const mimeType = testWebp.startsWith('data:image/webp') ? 'image/webp' : 'image/jpeg';
 
-    const qualitySteps = [0.82, 0.72, 0.62, 0.52, 0.42, 0.34];
-    let bestDataUrl = canvas.toDataURL(mimeType, 0.72);
+    const qualitySteps = [0.8, 0.7, 0.6, 0.5, 0.4, 0.32, 0.25];
+    let bestDataUrl = canvas.toDataURL(mimeType, 0.7);
 
     for (const q of qualitySteps) {
       const candidate = canvas.toDataURL(mimeType, q);
       const approxBytes = Math.round((candidate.length * 3) / 4);
       bestDataUrl = candidate;
-      if (approxBytes <= 82 * 1024) {
+      if (approxBytes <= 64 * 1024) {
         break;
       }
     }
 
-    // Jeśli nadal powyżej 120 KB (np. bardzo złożone zdjęcie), zmniejszamy szerokość do 640px
+    // Jeśli nadal powyżej 95 KB (np. bardzo złożone zdjęcie), zmniejszamy szerokość do 640px
     let approxBytes = Math.round((bestDataUrl.length * 3) / 4);
-    if (approxBytes > 120 * 1024 && targetW > 640) {
+    if (approxBytes > 95 * 1024 && targetW > 640) {
       const scale = 640 / targetW;
       canvas.width = 640;
       canvas.height = Math.round(targetH * scale);
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      bestDataUrl = canvas.toDataURL(mimeType, 0.55);
-      approxBytes = Math.round((bestDataUrl.length * 3) / 4);
+      for (const q of [0.65, 0.5, 0.38]) {
+        const candidate = canvas.toDataURL(mimeType, q);
+        bestDataUrl = candidate;
+        approxBytes = Math.round((candidate.length * 3) / 4);
+        if (approxBytes <= 64 * 1024) break;
+      }
     }
 
     return {
@@ -122,9 +126,54 @@ export async function compressImageToBase64(file: File): Promise<{
   }
 }
 
-export function generateQuestionId(indexOffset = 0): string {
+export function generateQuestionId(indexOffset = 0, baseTimestamp = Date.now()): string {
   const rand = Math.random().toString(36).slice(2, 8);
-  return `q_${Date.now()}_${indexOffset}_${rand}`;
+  const paddedOffset = String(indexOffset).padStart(5, '0');
+  return `q_${baseTimestamp}_${paddedOffset}_${rand}`;
+}
+
+function parseIdOrder(id: string): { ts: number; idx: number } | null {
+  const match = /^q_(\d+)_(\d+)(?:_|$)/.exec(id);
+  if (!match) return null;
+  return {
+    ts: Number(match[1]),
+    idx: Number(match[2])
+  };
+}
+
+function getCreatedAtMillis(createdAt: unknown): number | null {
+  if (!createdAt) return null;
+  if (createdAt instanceof Date) return createdAt.getTime();
+  if (typeof createdAt === 'object') {
+    const obj = createdAt as { toMillis?: () => number; seconds?: number; nanoseconds?: number };
+    if (typeof obj.toMillis === 'function') return obj.toMillis();
+    if (typeof obj.seconds === 'number') {
+      return obj.seconds * 1000 + Math.floor((obj.nanoseconds ?? 0) / 1_000_000);
+    }
+  }
+  return null;
+}
+
+/**
+ * Sortuje pytania ściśle w kolejności ich dodania/zaimportowania (najstarsze najpierw,
+ * z zachowaniem dokładnej kolejności wewnątrz paczek JSON niezależnie od leksykografii ID).
+ */
+export function compareQuestionsByCreationOrder(a: Question, b: Question): number {
+  const orderA = parseIdOrder(a.id);
+  const orderB = parseIdOrder(b.id);
+
+  if (orderA && orderB) {
+    if (orderA.ts !== orderB.ts) return orderA.ts - orderB.ts;
+    if (orderA.idx !== orderB.idx) return orderA.idx - orderB.idx;
+  }
+
+  const msA = getCreatedAtMillis(a.createdAt);
+  const msB = getCreatedAtMillis(b.createdAt);
+  if (msA !== null && msB !== null && msA !== msB) {
+    return msA - msB;
+  }
+
+  return a.id.localeCompare(b.id, undefined, { numeric: true });
 }
 
 function normalizeAnswerIndex(val: unknown, optionsLength: number): number | null {

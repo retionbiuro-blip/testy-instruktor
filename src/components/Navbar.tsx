@@ -28,8 +28,10 @@ export function Navbar({
   mistakesCount,
   openReportsCount
 }: NavbarProps) {
-  const navItems: { id: AppView; label: string; badge?: number }[] = [
+  const navItems: { id: AppView; label: string; mobileLabel?: string; badge?: number }[] = [
     { id: 'dashboard', label: 'Pulpit' },
+    { id: 'knowledge', label: 'Baza Wiedzy', mobileLabel: 'Wiedza' },
+    { id: 'legal-acts', label: 'Akty prawne', mobileLabel: 'Akty' },
     { id: 'study', label: 'Nauka' },
     { id: 'mistakes', label: 'Powtórka', badge: mistakesCount > 0 ? mistakesCount : undefined },
     { id: 'exam', label: 'Egzamin' },
@@ -40,6 +42,7 @@ export function Navbar({
     navItems.push({
       id: 'admin',
       label: 'Panel Admina',
+      mobileLabel: 'Admin',
       badge: openReportsCount > 0 ? openReportsCount : undefined
     });
   }
@@ -48,7 +51,7 @@ export function Navbar({
     <>
       {/* Górna nawigacja zgodna z kontraktem 3 stref */}
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/95">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-8 px-4 py-3 sm:px-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-6 px-4 py-3 sm:px-6">
           {/* Strefa 1: Marka (pojedynczy element tekstowy) */}
           <button
             type="button"
@@ -61,7 +64,7 @@ export function Navbar({
           {/* Strefa 2: Linki nawigacyjne na desktopie */}
           <nav
             aria-label="Nawigacja główna"
-            className="hidden items-center gap-6 md:flex"
+            className="hidden items-center gap-3.5 lg:gap-5 md:flex"
           >
             {navItems.map((item) => {
               const isActive =
@@ -138,7 +141,7 @@ export function Navbar({
       {/* Kompaktowy pasek nawigacji mobilnej (poniżej 15% wysokości ekranu) */}
       <nav
         aria-label="Nawigacja mobilna"
-        className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-around border-t border-slate-200 bg-white/95 px-2 py-1.5 backdrop-blur-sm md:hidden dark:border-slate-800 dark:bg-slate-950/95"
+        className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-between gap-0.5 overflow-x-auto border-t border-slate-200 bg-white/95 px-1.5 py-1.5 backdrop-blur-sm md:hidden dark:border-slate-800 dark:bg-slate-950/95"
       >
         {navItems.map((item) => {
           const isActive =
@@ -150,14 +153,14 @@ export function Navbar({
               key={item.id}
               type="button"
               onClick={() => onNavigate(item.id)}
-              className={`flex min-h-[44px] flex-1 cursor-pointer flex-col items-center justify-center rounded-md px-1 text-xs font-medium whitespace-nowrap transition-colors ${
+              className={`flex min-h-[44px] min-w-[52px] flex-1 shrink-0 cursor-pointer flex-col items-center justify-center rounded-md px-1.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
                 isActive
                   ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-400'
                   : 'text-slate-600 dark:text-slate-400'
               }`}
             >
               <span className="truncate">
-                {item.id === 'admin' ? 'Admin' : item.label}
+                {item.mobileLabel ?? item.label}
                 {item.badge !== undefined ? ` (${item.badge})` : ''}
               </span>
             </button>

@@ -5,20 +5,31 @@ import {
   Download,
   Edit3,
   FileJson,
+  FolderInput,
   FolderPlus,
+  History,
+  ImageOff,
   ImagePlus,
+  Images,
   Inbox,
   Loader2,
   Plus,
+  RotateCcw,
   Search,
   Sparkles,
   Trash2,
   Upload,
   X
 } from 'lucide-react';
-import { ChangeEvent, FormEvent, useMemo, useState } from 'react';
+import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from 'react';
 import { FIRESTORE_BATCH_LIMIT } from '../config';
-import { saveQuestionsToCache, setLocalDbVersion } from '../lib/indexedDb';
+import {
+  LastBulkImageBatch,
+  clearLastBulkImageBatch,
+  getLastBulkImageBatch,
+  saveQuestionsToCache,
+  setLocalDbVersion
+} from '../lib/indexedDb';
 import {
   SAMPLE_QUESTIONS_JSON,
   compressImageToBase64,
@@ -27,6 +38,9 @@ import {
   parseImportedQuestionsJson
 } from '../lib/questionUtils';
 import {
+  batchChangeQuestionsCategory,
+  batchClearQuestionImages,
+  batchDeleteQuestions,
   batchImportQuestions,
   deleteAdminQuestion,
   deleteReport,
@@ -34,13 +48,23 @@ import {
   saveCategoriesList,
   updateReportStatus
 } from '../services/firestoreService';
-import { ParsedQuestionInput, Question, ReportItem } from '../types';
+import { LegalAct, Lesson, ParsedQuestionInput, Question, ReportItem } from '../types';
+import { AdminLegalActsTab } from './AdminLegalActsTab';
+import { AdminMaterialsTab } from './AdminMaterialsTab';
+import { BulkImageMatcher } from './BulkImageMatcher';
 
 interface AdminPanelProps {
   questions: Question[];
+  lessons: Lesson[];
+  legalActs: LegalAct[];
   categories: string[];
+  notebookLmUrl?: string;
   reports: ReportItem[];
+  initialTab?: 'import' | 'questions' | 'categories' | 'lessons' | 'legal-acts' | 'reports';
   onQuestionsUpdated: (nextQuestions: Question[], nextCategories: string[], nextVersion: number) => void;
+  onLessonsUpdated: (nextLessons: Lesson[], nextCategories: string[], nextVersion: number) => void;
+  onLegalActsUpdated: (nextActs: LegalAct[], nextVersion: number) => void;
+  onNotebookLmUpdated: (nextUrl: string | undefined, nextVersion: number) => void;
   onReportsUpdated: (nextReports: ReportItem[]) => void;
   onRefreshReports: () => Promise<void>;
 }
@@ -49,19 +73,36 @@ const OPTION_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
 export function AdminPanel({
   questions,
+  lessons,
+  legalActs,
   categories,
+  notebookLmUrl,
   reports,
+  initialTab,
   onQuestionsUpdated,
+  onLessonsUpdated,
+  onLegalActsUpdated,
+  onNotebookLmUpdated,
   onReportsUpdated,
   onRefreshReports
 }: AdminPanelProps) {
-  const [activeTab, setActiveTab] = useState<'import' | 'questions' | 'categories' | 'reports'>('import');
+  const [activeTab, setActiveTab] = useState<
+    'import' | 'questions' | 'categories' | 'lessons' | 'legal-acts' | 'reports'
+  >(initialTab ?? 'import');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+      setBulkMatchMode(false);
+    }
+  }, [initialTab]);
 
   // --- STAN ZAKŁADKI 1: MASOWY IMPORT JSON ---
   const [overrideCategoryMode, setOverrideCategoryMode] = useState<'keep' | 'existing' | 'custom'>('keep');
   const [overrideExistingCategory, setOverrideExistingCategory] = useState(categories[0] ?? 'Ogólne / Mix');
   const [overrideCustomCategory, setOverrideCustomCategory] = useState('');
   const [rawJsonText, setRawJsonText] = useState('');
+  const [uploadedJsonFileName, setUploadedJsonFileName] = useState<string | null>(null);
   const [importParseError, setImportParseError] = useState<string | null>(null);
   const [parsePreview, setParsePreview] = useState<{
     uniqueNew: ParsedQuestionInput[];
@@ -84,10 +125,33 @@ export function AdminPanel({
   } | null>(null);
   const [importSummary, setImportSummary] = useState<string | null>(null);
 
-  // --- STAN ZAKŁADKI 2: ZARZĄDZANIE PYTANIAMI I OBRAZKAMI ---
+  // --- STAN ZAKŁADKI 2: ZARZĄDZANIE PYTANIAMI, MASOWA EDYCJA I OBRAZKI ---
+  const [bulkMatchMode, setBulkMatchMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState('__ALL__');
   const [onlyImagePlaceholder, setOnlyImagePlaceholder] = useState(false);
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([]);
+  const [showAllFiltered, setShowAllFiltered] = useState(false);
+  const [bulkActionProcessing, setBulkActionProcessing] = useState(false);
+  const [bulkStatusMessage, setBulkStatusMessage] = useState<string | null>(null);
+  const [bulkErrorMessage, setBulkErrorMessage] = useState<string | null>(null);
+  const [bulkCategoryModalOpen, setBulkCategoryModalOpen] = useState(false);
+  const [bulkCategoryMode, setBulkCategoryMode] = useState<'existing' | 'custom'>('existing');
+  const [bulkTargetExistingCategory, setBulkTargetExistingCategory] = useState(
+    categories[0] ?? 'Ogólne / Mix'
+  );
+  const [bulkTargetCustomCategory, setBulkTargetCustomCategory] = useState('');
+  const [lastBulkImageBatch, setLastBulkImageBatch] = useState<LastBulkImageBatch | null>(() =>
+    getLastBulkImageBatch()
+  );
+  const [confirmModal, setConfirmModal] = useState<{
+    title: string;
+    description: string;
+    confirmLabel: string;
+    variant: 'danger' | 'warning';
+    onConfirm: () => Promise<void>;
+  } | null>(null);
+
   const [editingQuestion, setEditingQuestion] = useState<Question | null>(null);
   const [isCreatingNew, setIsCreatingNew] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
@@ -116,6 +180,39 @@ export function AdminPanel({
   const allCategoryNames = useMemo(() => {
     return Array.from(new Set([...categories, ...questions.map((q) => q.category)])).filter(Boolean);
   }, [categories, questions]);
+
+  // Paczki importów JSON wyliczone z pytań zapisanych w bazie
+  const importBatches = useMemo(() => {
+    const groups = new Map<
+      string,
+      { batchId: string; label: string; questionIds: string[]; timestamp: number }
+    >();
+    for (const q of questions) {
+      if (!q.importBatchId) continue;
+      const existing = groups.get(q.importBatchId);
+      if (existing) {
+        existing.questionIds.push(q.id);
+      } else {
+        const tsMatch = /^batch_(\d+)/.exec(q.importBatchId);
+        groups.set(q.importBatchId, {
+          batchId: q.importBatchId,
+          label: q.importBatchLabel || q.importBatchId,
+          questionIds: [q.id],
+          timestamp: tsMatch ? Number(tsMatch[1]) : 0
+        });
+      }
+    }
+    return Array.from(groups.values()).sort((a, b) => b.timestamp - a.timestamp);
+  }, [questions]);
+
+  // ID pytań z ostatniego hurtowego dodania obrazków, które wciąż mają obrazek do cofnięcia
+  const undoableBulkImageIds = useMemo(() => {
+    if (!lastBulkImageBatch || lastBulkImageBatch.questionIds.length === 0) return [];
+    const targetSet = new Set(lastBulkImageBatch.questionIds);
+    return questions
+      .filter((q) => targetSet.has(q.id) && Boolean(q.imageBase64))
+      .map((q) => q.id);
+  }, [lastBulkImageBatch, questions]);
 
   // Analiza tekstu JSON pod kątem duplikatów i podglądu 5 pierwszych pytań
   function analyzeJson(text: string, modeOverride?: 'keep' | 'existing' | 'custom', customVal?: string, existingVal?: string) {
@@ -206,6 +303,7 @@ export function AdminPanel({
     const file = e.target.files?.[0];
     if (!file) return;
     const text = await file.text();
+    setUploadedJsonFileName(file.name);
     setRawJsonText(text);
     analyzeJson(text);
     e.target.value = '';
@@ -213,6 +311,7 @@ export function AdminPanel({
 
   function handleLoadStarterSampleIntoEditor() {
     const formatted = JSON.stringify(SAMPLE_QUESTIONS_JSON, null, 2);
+    setUploadedJsonFileName('zestaw_startowy.json');
     setRawJsonText(formatted);
     analyzeJson(formatted);
   }
@@ -245,6 +344,15 @@ export function AdminPanel({
     });
     setImportSummary(null);
 
+    const now = new Date();
+    const importBatchId = `batch_${now.getTime()}`;
+    const sourceLabel = uploadedJsonFileName || 'Wklejony JSON';
+    const dateLabel = now.toLocaleString('pl-PL', {
+      dateStyle: 'short',
+      timeStyle: 'short'
+    });
+    const importBatchLabel = `${sourceLabel} · ${dateLabel}`;
+
     try {
       const { addedQuestions, nextVersion, nextCategories, batchCount } =
         await batchImportQuestions(
@@ -252,7 +360,8 @@ export function AdminPanel({
           allCategoryNames,
           (completedBatches, totalBatches, savedItems) => {
             setImportProgress({ completedBatches, totalBatches, savedItems });
-          }
+          },
+          { importBatchId, importBatchLabel }
         );
 
       const updatedList = [...questions, ...addedQuestions];
@@ -263,9 +372,10 @@ export function AdminPanel({
       const totalSkipped =
         parsePreview.duplicates.length - parsePreview.forcedDuplicateIds.length;
       setImportSummary(
-        `Import zakończony! Dodano ${addedQuestions.length} pytań w ${batchCount} paczkach (w tym ręcznie dopuszczonych duplikatów: ${forcedItems.length}, pominiętych duplikatów: ${totalSkipped}). Wersja bazy: ${nextVersion}.`
+        `Import zakończony! Dodano ${addedQuestions.length} pytań w ${batchCount} paczkach (${importBatchLabel}; ręcznie dopuszczonych duplikatów: ${forcedItems.length}, pominiętych: ${totalSkipped}). Wersja bazy: ${nextVersion}.`
       );
       setRawJsonText('');
+      setUploadedJsonFileName(null);
       setParsePreview(null);
     } catch (err) {
       setImportParseError(
@@ -465,11 +575,134 @@ export function AdminPanel({
     onReportsUpdated(reports.filter((r) => r.id !== reportId));
   }
 
+  // --- MASOWE OPERACJE NA ZAZNACZONYCH PYTANIACH, PACZKACH IMPORTU I OBRAZKACH ---
+  async function executeBulkClearImages(targetIds: string[], clearUndoStorage = false) {
+    if (targetIds.length === 0 || bulkActionProcessing) return;
+    setBulkActionProcessing(true);
+    setBulkErrorMessage(null);
+    setBulkStatusMessage(null);
+    try {
+      const nextVersion = await batchClearQuestionImages(targetIds);
+      const idSet = new Set(targetIds);
+      const nextList = questions.map((q) =>
+        idSet.has(q.id)
+          ? { ...q, imageBase64: undefined, hasImagePlaceholder: true }
+          : q
+      );
+      await saveQuestionsToCache(nextList);
+      setLocalDbVersion(nextVersion);
+      onQuestionsUpdated(nextList, allCategoryNames, nextVersion);
+      setSelectedQuestionIds((prev) => prev.filter((id) => !idSet.has(id)));
+      if (clearUndoStorage) {
+        clearLastBulkImageBatch();
+        setLastBulkImageBatch(null);
+      }
+      setBulkStatusMessage(
+        `Wyczyszczono obrazki w ${targetIds.length} pytaniach i przywrócono je do puli czekających na ilustrację. Wersja bazy: ${nextVersion}.`
+      );
+    } catch (err) {
+      setBulkErrorMessage(
+        err instanceof Error ? err.message : 'Nie udało się usunąć obrazków.'
+      );
+    } finally {
+      setBulkActionProcessing(false);
+    }
+  }
+
+  async function executeBulkDeleteQuestions(targetIds: string[], customSuccessMsg?: string) {
+    if (targetIds.length === 0 || bulkActionProcessing) return;
+    setBulkActionProcessing(true);
+    setBulkErrorMessage(null);
+    setBulkStatusMessage(null);
+    setImportParseError(null);
+    setImportSummary(null);
+    try {
+      const nextVersion = await batchDeleteQuestions(targetIds);
+      const idSet = new Set(targetIds);
+      const nextList = questions.filter((q) => !idSet.has(q.id));
+      await saveQuestionsToCache(nextList);
+      setLocalDbVersion(nextVersion);
+      onQuestionsUpdated(nextList, allCategoryNames, nextVersion);
+      setSelectedQuestionIds((prev) => prev.filter((id) => !idSet.has(id)));
+      const msg =
+        customSuccessMsg ??
+        `Usunięto trwale ${targetIds.length} pytań z Firestore. Wersja bazy: ${nextVersion}.`;
+      setBulkStatusMessage(msg);
+      if (customSuccessMsg) {
+        setImportSummary(`${msg} Wersja bazy: ${nextVersion}.`);
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Nie udało się usunąć pytań.';
+      setBulkErrorMessage(errMsg);
+      setImportParseError(errMsg);
+    } finally {
+      setBulkActionProcessing(false);
+    }
+  }
+
+  async function handleBulkChangeCategorySubmit(e: FormEvent) {
+    e.preventDefault();
+    if (selectedQuestionIds.length === 0 || bulkActionProcessing) return;
+    const targetCategory =
+      bulkCategoryMode === 'existing'
+        ? bulkTargetExistingCategory
+        : bulkTargetCustomCategory.trim();
+    if (!targetCategory) {
+      setBulkErrorMessage('Wybierz lub wpisz nazwę nowej kategorii.');
+      return;
+    }
+
+    setBulkActionProcessing(true);
+    setBulkErrorMessage(null);
+    setBulkStatusMessage(null);
+    try {
+      const { nextVersion, nextCategories } = await batchChangeQuestionsCategory(
+        selectedQuestionIds,
+        targetCategory,
+        allCategoryNames
+      );
+      const idSet = new Set(selectedQuestionIds);
+      const nextList = questions.map((q) =>
+        idSet.has(q.id) ? { ...q, category: targetCategory } : q
+      );
+      await saveQuestionsToCache(nextList);
+      setLocalDbVersion(nextVersion);
+      onQuestionsUpdated(nextList, nextCategories, nextVersion);
+      setSelectedQuestionIds([]);
+      setBulkCategoryModalOpen(false);
+      setBulkTargetCustomCategory('');
+      setBulkStatusMessage(
+        `Zmieniono kategorię na „${targetCategory}” w ${idSet.size} pytaniach. Wersja bazy: ${nextVersion}.`
+      );
+    } catch (err) {
+      setBulkErrorMessage(
+        err instanceof Error ? err.message : 'Nie udało się zmienić kategorii.'
+      );
+    } finally {
+      setBulkActionProcessing(false);
+    }
+  }
+
+  function requestUndoLastBulkImages() {
+    if (undoableBulkImageIds.length === 0) return;
+    setConfirmModal({
+      title: 'Cofnij ostatnie hurtowe dodanie obrazków',
+      description: `Czy na pewno wycofać ostatnie hurtowe przypisanie obrazków dla ${undoableBulkImageIds.length} pytań? Pole imageBase64 zostanie wyczyszczone (null), a pytania wrócą na listę oczekujących na obrazek.`,
+      confirmLabel: `Cofnij ${undoableBulkImageIds.length} obrazków`,
+      variant: 'warning',
+      onConfirm: async () => {
+        await executeBulkClearImages(undoableBulkImageIds, true);
+      }
+    });
+  }
+
   // Filtrowana lista pytań w zakładce Zarządzanie
   const filteredQuestions = useMemo(() => {
     const qLower = searchQuery.trim().toLowerCase();
     return questions.filter((q) => {
-      if (onlyImagePlaceholder && !q.hasImagePlaceholder) return false;
+      if (onlyImagePlaceholder && (!q.hasImagePlaceholder || Boolean(q.imageBase64))) {
+        return false;
+      }
       if (filterCategory !== '__ALL__' && q.category !== filterCategory) return false;
       if (qLower) {
         return (
@@ -482,8 +715,34 @@ export function AdminPanel({
     });
   }, [questions, searchQuery, filterCategory, onlyImagePlaceholder]);
 
+  const visibleQuestions = useMemo(
+    () => (showAllFiltered ? filteredQuestions : filteredQuestions.slice(0, 100)),
+    [filteredQuestions, showAllFiltered]
+  );
+
+  const selectedIdSet = useMemo(() => new Set(selectedQuestionIds), [selectedQuestionIds]);
+  const allFilteredSelected =
+    filteredQuestions.length > 0 && filteredQuestions.every((q) => selectedIdSet.has(q.id));
+
+  function toggleQuestionSelection(id: string) {
+    setSelectedQuestionIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function toggleSelectAllFiltered() {
+    if (allFilteredSelected) {
+      const filteredSet = new Set(filteredQuestions.map((q) => q.id));
+      setSelectedQuestionIds((prev) => prev.filter((id) => !filteredSet.has(id)));
+    } else {
+      setSelectedQuestionIds((prev) =>
+        Array.from(new Set([...prev, ...filteredQuestions.map((q) => q.id)]))
+      );
+    }
+  }
+
   const openReportsCount = reports.filter((r) => r.status === 'open').length;
-  const placeholderCount = questions.filter((q) => q.hasImagePlaceholder).length;
+  const placeholderCount = questions.filter((q) => q.hasImagePlaceholder && !q.imageBase64).length;
   const visibleReports = reports.filter((r) =>
     reportFilter === 'all' ? true : r.status === reportFilter
   );
@@ -504,7 +763,10 @@ export function AdminPanel({
         <div className="flex flex-wrap gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
           <button
             type="button"
-            onClick={() => setActiveTab('import')}
+            onClick={() => {
+              setActiveTab('import');
+              setBulkMatchMode(false);
+            }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'import'
                 ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
@@ -526,7 +788,10 @@ export function AdminPanel({
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab('categories')}
+            onClick={() => {
+              setActiveTab('categories');
+              setBulkMatchMode(false);
+            }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'categories'
                 ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
@@ -538,7 +803,36 @@ export function AdminPanel({
           <button
             type="button"
             onClick={() => {
+              setActiveTab('lessons');
+              setBulkMatchMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'lessons'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Materiały i NotebookLM ({lessons.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('legal-acts');
+              setBulkMatchMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'legal-acts'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Akty prawne ({legalActs.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               setActiveTab('reports');
+              setBulkMatchMode(false);
               void onRefreshReports();
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
@@ -551,6 +845,25 @@ export function AdminPanel({
           </button>
         </div>
       </div>
+
+      {/* ZAKŁADKA: MATERIAŁY DO NAUKI I NOTEBOOKLM */}
+      {activeTab === 'lessons' && (
+        <AdminMaterialsTab
+          lessons={lessons}
+          categories={allCategoryNames}
+          notebookLmUrl={notebookLmUrl}
+          onLessonsUpdated={onLessonsUpdated}
+          onNotebookLmUpdated={onNotebookLmUpdated}
+        />
+      )}
+
+      {/* ZAKŁADKA: AKTY PRAWNE */}
+      {activeTab === 'legal-acts' && (
+        <AdminLegalActsTab
+          legalActs={legalActs}
+          onLegalActsUpdated={onLegalActsUpdated}
+        />
+      )}
 
       {/* ZAKŁADKA 1: MASOWY IMPORT JSON */}
       {activeTab === 'import' && (
@@ -676,8 +989,12 @@ export function AdminPanel({
                 rows={6}
                 value={rawJsonText}
                 onChange={(e) => {
-                  setRawJsonText(e.target.value);
-                  analyzeJson(e.target.value);
+                  const nextText = e.target.value;
+                  if (!nextText.trim()) {
+                    setUploadedJsonFileName(null);
+                  }
+                  setRawJsonText(nextText);
+                  analyzeJson(nextText);
                 }}
                 placeholder='[{"category":"Prawo o ruchu drogowym","question":"Treść pytania...","options":["Odp A","Odp B","Odp C"],"correctAnswers":[0,2]}]'
                 className="font-mono w-full rounded-lg border border-slate-300 bg-white p-3 text-xs text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
@@ -945,13 +1262,91 @@ export function AdminPanel({
               );
             })()}
           </div>
+
+          {/* Sekcja: Ostatnie paczki importu JSON */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4 dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <History className="h-5 w-5 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+                <div>
+                  <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+                    Ostatnie paczki importu
+                  </h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Każdy import JSON zapisuje wspólny identyfikator paczki, dzięki czemu możesz jednym kliknięciem cofnąć cały błędny import.
+                  </p>
+                </div>
+              </div>
+              <span className="font-mono text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                {importBatches.length} {importBatches.length === 1 ? 'paczka' : 'paczek'}
+              </span>
+            </div>
+
+            {importBatches.length === 0 ? (
+              <p className="rounded-lg border border-dashed border-slate-200 p-4 text-center text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
+                Brak zapisanych paczek importu w bieżącej bazie pytań.
+              </p>
+            ) : (
+              <div className="divide-y divide-slate-200 overflow-hidden rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+                {importBatches.map((batch) => (
+                  <div
+                    key={batch.batchId}
+                    className="flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                        {batch.label}
+                      </p>
+                      <p className="font-mono mt-0.5 text-xs text-slate-500 tabular-nums dark:text-slate-400">
+                        ID: {batch.batchId} · Liczba pytań w bazie: {batch.questionIds.length}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={bulkActionProcessing}
+                      onClick={() =>
+                        setConfirmModal({
+                          title: 'Cofnij / Usuń całą paczkę importu',
+                          description: `Czy na pewno chcesz trwale usunąć wszystkie ${batch.questionIds.length} pytań z paczki „${batch.label}”? Operacja wykona się w paczkach batch i podbije wersję bazy.`,
+                          confirmLabel: `Usuń ${batch.questionIds.length} pytań z paczki`,
+                          variant: 'danger',
+                          onConfirm: async () => {
+                            await executeBulkDeleteQuestions(
+                              batch.questionIds,
+                              `Cofnięto paczkę „${batch.label}” — usunięto ${batch.questionIds.length} pytań z Firestore.`
+                            );
+                          }
+                        })
+                      }
+                      className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/60"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Cofnij / Usuń całą paczkę</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </section>
       )}
 
       {/* ZAKŁADKA 2: ZARZĄDZANIE PYTANIAMI I OBRAZKAMI */}
       {activeTab === 'questions' && (
+        bulkMatchMode ? (
+          <BulkImageMatcher
+            questions={questions}
+            categories={allCategoryNames}
+            undoableBulkImageCount={undoableBulkImageIds.length}
+            undoingBulkImages={bulkActionProcessing}
+            onRequestUndoBulkImages={requestUndoLastBulkImages}
+            onBulkImagesSaved={(savedBatch) => setLastBulkImageBatch(savedBatch)}
+            onClose={() => setBulkMatchMode(false)}
+            onQuestionsUpdated={onQuestionsUpdated}
+          />
+        ) : (
         <section className="space-y-4">
-          <div className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 sm:flex-row sm:items-center dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:flex-row lg:items-center dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-1 flex-wrap items-center gap-3">
               <div className="relative min-w-[220px] flex-1">
                 <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -991,15 +1386,175 @@ export function AdminPanel({
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={openNewQuestionModal}
-              className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
-            >
-              <Plus className="h-4 w-4" />
-              <span>Dodaj pytanie</span>
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {undoableBulkImageIds.length > 0 && (
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={requestUndoLastBulkImages}
+                  className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-900 transition-colors hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-950/70"
+                >
+                  <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                  <span>Cofnij ostatnie hurtowe dodanie obrazków ({undoableBulkImageIds.length})</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setBulkMatchMode(true)}
+                className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-blue-600 bg-blue-50 px-3.5 text-xs font-semibold text-blue-800 transition-colors hover:bg-blue-100 dark:border-blue-500 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/70"
+              >
+                <Images className="h-4 w-4" aria-hidden="true" />
+                <span>Hurtowe dopasowywanie obrazków ({placeholderCount})</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={openNewQuestionModal}
+                className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg bg-blue-700 px-4 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
+              >
+                <Plus className="h-4 w-4" />
+                <span>Dodaj pytanie</span>
+              </button>
+            </div>
           </div>
+
+          {bulkStatusMessage && (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-medium text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200"
+            >
+              <span>{bulkStatusMessage}</span>
+              <button
+                type="button"
+                onClick={() => setBulkStatusMessage(null)}
+                className="cursor-pointer text-emerald-700 hover:text-emerald-950 dark:text-emerald-300"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {bulkErrorMessage && (
+            <div
+              role="alert"
+              className="flex items-center justify-between gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-xs font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+            >
+              <span>{bulkErrorMessage}</span>
+              <button
+                type="button"
+                onClick={() => setBulkErrorMessage(null)}
+                className="cursor-pointer text-red-700 hover:text-red-950 dark:text-red-300"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Pasek akcji masowych (widoczny, gdy zaznaczono >= 1 pytanie) */}
+          {selectedQuestionIds.length > 0 && (
+            <div className="sticky top-16 z-20 flex flex-col justify-between gap-3 rounded-xl border border-blue-300 bg-blue-50/95 p-4 shadow-sm backdrop-blur-sm sm:flex-row sm:items-center dark:border-blue-800 dark:bg-blue-950/90">
+              <div className="flex items-center gap-3">
+                <span className="font-mono text-sm font-bold text-blue-900 tabular-nums dark:text-blue-200">
+                  Zaznaczono: {selectedQuestionIds.length}
+                </span>
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={() => setSelectedQuestionIds([])}
+                  className="cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-300"
+                >
+                  Odznacz wszystko
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={() => {
+                    setBulkCategoryMode('existing');
+                    setBulkTargetExistingCategory(allCategoryNames[0] ?? 'Ogólne / Mix');
+                    setBulkTargetCustomCategory('');
+                    setBulkCategoryModalOpen(true);
+                  }}
+                  className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+                >
+                  <FolderInput className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+                  <span>Zmień kategorię</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={() =>
+                    setConfirmModal({
+                      title: 'Usuń obrazki z zaznaczonych pytań',
+                      description: `Czy na pewno chcesz wyczyścić obrazki w ${selectedQuestionIds.length} zaznaczonych pytaniach? Pole imageBase64 otrzyma wartość null, a pytania wrócą do puli z hasImagePlaceholder: true.`,
+                      confirmLabel: `Usuń obrazki (${selectedQuestionIds.length})`,
+                      variant: 'warning',
+                      onConfirm: async () => {
+                        await executeBulkClearImages(selectedQuestionIds);
+                      }
+                    })
+                  }
+                  className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                >
+                  <ImageOff className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Usuń obrazki</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={() =>
+                    setConfirmModal({
+                      title: 'Trwale usuń zaznaczone pytania',
+                      description: `Czy na pewno chcesz trwale usunąć ${selectedQuestionIds.length} zaznaczonych pytań z bazy Firestore? Tej operacji nie można cofnąć.`,
+                      confirmLabel: `Usuń zaznaczone (${selectedQuestionIds.length})`,
+                      variant: 'danger',
+                      onConfirm: async () => {
+                        await executeBulkDeleteQuestions(selectedQuestionIds);
+                      }
+                    })
+                  }
+                  className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-red-700 px-3 text-xs font-semibold text-white hover:bg-red-800 disabled:opacity-50 dark:bg-red-600 dark:hover:bg-red-500"
+                >
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Usuń zaznaczone</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Główny checkbox zaznaczania wszystkich widocznych/przefiltrowanych pytań */}
+          {filteredQuestions.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900/60">
+              <label className="flex cursor-pointer items-center gap-2.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  onChange={toggleSelectAllFiltered}
+                  className="h-4 w-4 rounded border-slate-300 accent-blue-700"
+                />
+                <span>
+                  Zaznacz wszystkie widoczne (przefiltrowane) — {filteredQuestions.length}
+                </span>
+              </label>
+
+              {filteredQuestions.length > 100 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllFiltered((v) => !v)}
+                  className="cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                >
+                  {showAllFiltered
+                    ? 'Ogranicz widok do 100 wierszy'
+                    : `Pokaż wszystkie (${filteredQuestions.length})`}
+                </button>
+              )}
+            </div>
+          )}
 
           <div className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
             {filteredQuestions.length === 0 ? (
@@ -1007,12 +1562,23 @@ export function AdminPanel({
                 Brak pytań spełniających wybrane kryteria.
               </div>
             ) : (
-              filteredQuestions.slice(0, 100).map((q) => (
+              visibleQuestions.map((q) => {
+                const isChecked = selectedIdSet.has(q.id);
+                return (
                 <div
                   key={q.id}
-                  className="flex flex-col justify-between gap-4 p-4 sm:flex-row sm:items-center"
+                  className={`flex flex-col justify-between gap-4 p-4 transition-colors sm:flex-row sm:items-center ${
+                    isChecked ? 'bg-blue-50/50 dark:bg-blue-950/20' : ''
+                  }`}
                 >
                   <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      aria-label={`Zaznacz pytanie: ${q.question.slice(0, 60)}`}
+                      checked={isChecked}
+                      onChange={() => toggleQuestionSelection(q.id)}
+                      className="mt-1 h-4 w-4 shrink-0 cursor-pointer rounded border-slate-300 accent-blue-700"
+                    />
                     {q.imageBase64 && (
                       <img
                         src={q.imageBase64}
@@ -1062,15 +1628,17 @@ export function AdminPanel({
                     </button>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
           </div>
-          {filteredQuestions.length > 100 && (
+          {filteredQuestions.length > 100 && !showAllFiltered && (
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Wyświetlono pierwszych 100 wyników z {filteredQuestions.length}. Zawęź wyszukiwanie, aby zobaczyć pozostałe.
+              Wyświetlono pierwszych 100 wyników z {filteredQuestions.length}. Użyj przycisku „Pokaż wszystkie” powyżej lub zawęź wyszukiwanie.
             </p>
           )}
         </section>
+        )
       )}
 
       {/* ZAKŁADKA 3: ZARZĄDZANIE KATEGORIAMI */}
@@ -1528,6 +2096,152 @@ export function AdminPanel({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* MODAL ZMIANY KATEGORII DLA ZAZNACZONYCH PYTAŃ */}
+      {bulkCategoryModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                Zmień kategorię ({selectedQuestionIds.length} pytań)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setBulkCategoryModalOpen(false)}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleBulkChangeCategorySubmit} className="space-y-4">
+              <div className="flex rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setBulkCategoryMode('existing')}
+                  className={`flex-1 cursor-pointer rounded-md py-1.5 text-xs font-semibold ${
+                    bulkCategoryMode === 'existing'
+                      ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  Istniejąca kategoria
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkCategoryMode('custom')}
+                  className={`flex-1 cursor-pointer rounded-md py-1.5 text-xs font-semibold ${
+                    bulkCategoryMode === 'custom'
+                      ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                      : 'text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  Wpisz nową kategorię
+                </button>
+              </div>
+
+              {bulkCategoryMode === 'existing' ? (
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Wybierz kategorię docelową
+                  </label>
+                  <select
+                    value={bulkTargetExistingCategory}
+                    onChange={(e) => setBulkTargetExistingCategory(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  >
+                    {allCategoryNames.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Nazwa nowej kategorii
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    maxLength={120}
+                    value={bulkTargetCustomCategory}
+                    onChange={(e) => setBulkTargetCustomCategory(e.target.value)}
+                    placeholder="np. Przepisy o kierujących"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBulkCategoryModalOpen(false)}
+                  className="cursor-pointer rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
+                >
+                  Anuluj
+                </button>
+                <button
+                  type="submit"
+                  disabled={bulkActionProcessing}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600"
+                >
+                  {bulkActionProcessing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>Zapisz nową kategorię</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL POTWIERDZENIA OPERACJI MASOWYCH / COFANIA PACZEK */}
+      {confirmModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+              {confirmModal.title}
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+              {confirmModal.description}
+            </p>
+            <div className="mt-5 flex justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={bulkActionProcessing}
+                onClick={() => setConfirmModal(null)}
+                className="cursor-pointer rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300"
+              >
+                Anuluj
+              </button>
+              <button
+                type="button"
+                disabled={bulkActionProcessing}
+                onClick={async () => {
+                  await confirmModal.onConfirm();
+                  setConfirmModal(null);
+                }}
+                className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-4 py-2 text-xs font-semibold text-white disabled:opacity-60 ${
+                  confirmModal.variant === 'danger'
+                    ? 'bg-red-700 hover:bg-red-800 dark:bg-red-600'
+                    : 'bg-amber-700 hover:bg-amber-800 dark:bg-amber-600'
+                }`}
+              >
+                {bulkActionProcessing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{confirmModal.confirmLabel}</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

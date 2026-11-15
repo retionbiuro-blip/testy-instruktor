@@ -5,7 +5,9 @@ import { AdminPanel } from './components/AdminPanel';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardView } from './components/DashboardView';
 import { ExamView } from './components/ExamView';
+import { KnowledgeBaseView } from './components/KnowledgeBaseView';
 import { LeaderboardView } from './components/LeaderboardView';
+import { LegalActsView } from './components/LegalActsView';
 import { Navbar } from './components/Navbar';
 import { StudyView } from './components/StudyView';
 import { ADMIN_EMAIL, ALL_CATEGORIES_KEY, DEFAULT_CATEGORIES } from './config';
@@ -15,9 +17,19 @@ import {
   fetchLeaderboard,
   fetchReports,
   loadOrCreateUserProgress,
+  syncLegalActsWithCache,
+  syncLessonsWithCache,
   syncQuestionsWithCache
 } from './services/firestoreService';
-import { AppView, LeaderboardEntry, Question, ReportItem, UserProgress } from './types';
+import {
+  AppView,
+  LeaderboardEntry,
+  LegalAct,
+  Lesson,
+  Question,
+  ReportItem,
+  UserProgress
+} from './types';
 
 const GUEST_PROGRESS: UserProgress = {
   uid: 'guest',
@@ -45,9 +57,15 @@ export default function App() {
 
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES_KEY);
+  const [adminInitialTab, setAdminInitialTab] = useState<'import' | 'lessons' | 'legal-acts' | undefined>(
+    undefined
+  );
 
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [legalActs, setLegalActs] = useState<LegalAct[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
+  const [notebookLmUrl, setNotebookLmUrl] = useState<string | undefined>(undefined);
   const [dbVersion, setDbVersion] = useState<number>(0);
   const [progress, setProgress] = useState<UserProgress | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -101,8 +119,16 @@ export default function App() {
           fetchLeaderboard()
         ]);
 
+        const [lessonsRes, actsRes] = await Promise.all([
+          syncLessonsWithCache(syncRes.metadata, false),
+          syncLegalActsWithCache(syncRes.metadata, false)
+        ]);
+
         setQuestions(syncRes.questions);
+        setLessons(lessonsRes.lessons);
+        setLegalActs(actsRes.legalActs);
         setCategories(syncRes.metadata.categories);
+        setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
         setProgress(userProg);
         setLeaderboard(board);
@@ -132,6 +158,7 @@ export default function App() {
       const syncRes = await syncQuestionsWithCache(false, false);
       setQuestions(syncRes.questions);
       setCategories(syncRes.metadata.categories);
+      setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
       setDbVersion(syncRes.metadata.dbVersion);
     } catch (err) {
       console.error('Błąd ładowania pytań w trybie gościa:', err);
@@ -160,14 +187,22 @@ export default function App() {
         const syncRes = await syncQuestionsWithCache(false, false);
         setQuestions(syncRes.questions);
         setCategories(syncRes.metadata.categories);
+        setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
       } else {
         const [syncRes, board] = await Promise.all([
           syncQuestionsWithCache(isAdmin, false),
           fetchLeaderboard()
         ]);
+        const [lessonsRes, actsRes] = await Promise.all([
+          syncLessonsWithCache(syncRes.metadata, false),
+          syncLegalActsWithCache(syncRes.metadata, false)
+        ]);
         setQuestions(syncRes.questions);
+        setLessons(lessonsRes.lessons);
+        setLegalActs(actsRes.legalActs);
         setCategories(syncRes.metadata.categories);
+        setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
         setLeaderboard(board);
       }
@@ -196,6 +231,9 @@ export default function App() {
   const handleNavigate = useCallback(
     (view: AppView) => {
       if (view === 'admin' && !isAdmin) return;
+      if (view !== 'admin') {
+        setAdminInitialTab(undefined);
+      }
       setCurrentView(view);
       if (!isGuest && (view === 'leaderboard' || view === 'dashboard')) {
         void handleRefreshLeaderboard();
@@ -327,7 +365,9 @@ export default function App() {
             {currentView === 'dashboard' && (
               <DashboardView
                 questions={questions}
+                lessons={lessons}
                 categories={categories}
+                notebookLmUrl={notebookLmUrl}
                 progress={activeProgress}
                 leaderboard={leaderboard}
                 selectedCategory={selectedCategory}
@@ -339,6 +379,39 @@ export default function App() {
                 dbVersion={dbVersion}
                 onRefreshSync={handleRefreshSync}
                 syncing={syncing}
+              />
+            )}
+
+            {currentView === 'knowledge' && (
+              <KnowledgeBaseView
+                lessons={lessons}
+                categories={categories}
+                notebookLmUrl={notebookLmUrl}
+                progress={activeProgress}
+                onProgressChange={setProgress}
+                isGuest={guestModeActive}
+                isAdmin={isAdmin}
+                onRequireAuth={handleRequireAuth}
+                onPracticeCategory={(cat) => handleStartMode('study', cat)}
+                onOpenAdminMaterials={() => {
+                  setAdminInitialTab('lessons');
+                  handleNavigate('admin');
+                }}
+                onBackToDashboard={() => handleNavigate('dashboard')}
+              />
+            )}
+
+            {currentView === 'legal-acts' && (
+              <LegalActsView
+                legalActs={legalActs}
+                isGuest={guestModeActive}
+                isAdmin={isAdmin}
+                onRequireAuth={handleRequireAuth}
+                onOpenAdminLegalActs={() => {
+                  setAdminInitialTab('legal-acts');
+                  handleNavigate('admin');
+                }}
+                onBackToDashboard={() => handleNavigate('dashboard')}
               />
             )}
 
@@ -388,11 +461,28 @@ export default function App() {
             {currentView === 'admin' && isAdmin && (
               <AdminPanel
                 questions={questions}
+                lessons={lessons}
+                legalActs={legalActs}
                 categories={categories}
+                notebookLmUrl={notebookLmUrl}
                 reports={reports}
+                initialTab={adminInitialTab}
                 onQuestionsUpdated={(nextQuestions, nextCats, nextVer) => {
                   setQuestions(nextQuestions);
                   setCategories(nextCats);
+                  setDbVersion(nextVer);
+                }}
+                onLessonsUpdated={(nextLessons, nextCats, nextVer) => {
+                  setLessons(nextLessons);
+                  setCategories(nextCats);
+                  setDbVersion(nextVer);
+                }}
+                onLegalActsUpdated={(nextActs, nextVer) => {
+                  setLegalActs(nextActs);
+                  setDbVersion(nextVer);
+                }}
+                onNotebookLmUpdated={(nextUrl, nextVer) => {
+                  setNotebookLmUrl(nextUrl);
                   setDbVersion(nextVer);
                 }}
                 onReportsUpdated={setReports}

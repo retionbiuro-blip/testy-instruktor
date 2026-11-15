@@ -21,12 +21,21 @@ import {
 } from '../config';
 import { OperationType, db, handleFirestoreError } from '../lib/firebase';
 import {
+  getCachedLegalActs,
+  getCachedLessons,
   getCachedQuestions,
   getLocalDbVersion,
+  getLocalLegalActsDbVersion,
+  getLocalLessonsDbVersion,
+  saveLegalActsToCache,
+  saveLessonsToCache,
   saveQuestionsToCache,
-  setLocalDbVersion
+  setLocalDbVersion,
+  setLocalLegalActsDbVersion,
+  setLocalLessonsDbVersion
 } from '../lib/indexedDb';
 import {
+  compareQuestionsByCreationOrder,
   generateQuestionId,
   getTodayLocalIsoDate,
   getYesterdayLocalIsoDate
@@ -35,6 +44,8 @@ import {
   CommentItem,
   ExamHistoryItem,
   LeaderboardEntry,
+  LegalAct,
+  Lesson,
   ParsedQuestionInput,
   Question,
   ReportItem,
@@ -74,6 +85,12 @@ function buildCleanQuestionPayload(q: Question, includeCreatedAt = false): Recor
   if (q.explanation && q.explanation.trim()) {
     payload.explanation = q.explanation.trim();
   }
+  if (q.importBatchId) {
+    payload.importBatchId = q.importBatchId;
+  }
+  if (q.importBatchLabel) {
+    payload.importBatchLabel = q.importBatchLabel;
+  }
   return payload;
 }
 
@@ -106,6 +123,10 @@ export async function syncQuestionsWithCache(
           Array.isArray(data.categories) && data.categories.length > 0
             ? (data.categories as string[])
             : DEFAULT_CATEGORIES,
+        notebookLmUrl:
+          typeof data.notebookLmUrl === 'string' && data.notebookLmUrl.trim().length > 0
+            ? data.notebookLmUrl.trim()
+            : undefined,
         updatedAt: data.updatedAt
       };
     } else if (isAdmin) {
@@ -149,13 +170,20 @@ export async function syncQuestionsWithCache(
         question: String(data.question ?? ''),
         options: Array.isArray(data.options) ? (data.options as string[]) : [],
         correctAnswers: Array.isArray(data.correctAnswers) ? (data.correctAnswers as number[]) : [0],
-        imageBase64: typeof data.imageBase64 === 'string' ? data.imageBase64 : undefined,
+        imageBase64:
+          typeof data.imageBase64 === 'string' && data.imageBase64.length > 0
+            ? data.imageBase64
+            : undefined,
         hasImagePlaceholder: Boolean(data.hasImagePlaceholder),
         explanation: typeof data.explanation === 'string' ? data.explanation : undefined,
+        importBatchId: typeof data.importBatchId === 'string' ? data.importBatchId : undefined,
+        importBatchLabel: typeof data.importBatchLabel === 'string' ? data.importBatchLabel : undefined,
         createdAt: data.createdAt,
         updatedAt: data.updatedAt
       };
     });
+
+    freshQuestions.sort(compareQuestionsByCreationOrder);
 
     await saveQuestionsToCache(freshQuestions);
     setLocalDbVersion(metadata.dbVersion);
@@ -170,12 +198,126 @@ export async function syncQuestionsWithCache(
   }
 }
 
+/**
+ * Synchronizuje kolekcję lessons używając dokładnie tego samego licznika dbVersion
+ * z system/metadata oraz lokalnego cache IndexedDB (wyłącznie dla zalogowanych).
+ */
+export async function syncLessonsWithCache(
+  metadata: SystemMetadata,
+  forceServerFetch = false
+): Promise<{ lessons: Lesson[]; syncedFromServer: boolean }> {
+  const localLessonsVersion = getLocalLessonsDbVersion();
+  const cachedLessons = await getCachedLessons();
+
+  const needsSync =
+    forceServerFetch ||
+    localLessonsVersion < 0 ||
+    metadata.dbVersion > localLessonsVersion;
+
+  if (!needsSync) {
+    return {
+      lessons: cachedLessons.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl')),
+      syncedFromServer: false
+    };
+  }
+
+  try {
+    const snapshot = await getDocs(collection(db, 'lessons'));
+    const freshLessons: Lesson[] = snapshot.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: String(data.id ?? d.id),
+        category: String(data.category ?? 'Ogólne / Mix'),
+        title: String(data.title ?? ''),
+        order: typeof data.order === 'number' ? data.order : 1,
+        legalBasis: String(data.legalBasis ?? ''),
+        content: String(data.content ?? ''),
+        keyTakeaways: String(data.keyTakeaways ?? ''),
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    });
+
+    freshLessons.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl'));
+
+    await saveLessonsToCache(freshLessons);
+    setLocalLessonsDbVersion(metadata.dbVersion);
+
+    return {
+      lessons: freshLessons,
+      syncedFromServer: true
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'lessons');
+  }
+}
+
+/**
+ * Synchronizuje kolekcję legalActs używając tego samego licznika dbVersion
+ * z system/metadata oraz lokalnego cache IndexedDB (wyłącznie dla zalogowanych).
+ */
+export async function syncLegalActsWithCache(
+  metadata: SystemMetadata,
+  forceServerFetch = false
+): Promise<{ legalActs: LegalAct[]; syncedFromServer: boolean }> {
+  const localLegalActsVersion = getLocalLegalActsDbVersion();
+  const cachedActs = await getCachedLegalActs();
+
+  const needsSync =
+    forceServerFetch ||
+    localLegalActsVersion < 0 ||
+    metadata.dbVersion > localLegalActsVersion;
+
+  if (!needsSync) {
+    return {
+      legalActs: cachedActs.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl')),
+      syncedFromServer: false
+    };
+  }
+
+  try {
+    const snapshot = await getDocs(collection(db, 'legalActs'));
+    const freshActs: LegalAct[] = snapshot.docs.map((d) => {
+      const data = d.data();
+      const rawType = data.type;
+      const safeType =
+        rawType === 'ustawa' || rawType === 'rozporzadzenie' || rawType === 'inne'
+          ? rawType
+          : 'inne';
+      return {
+        id: String(data.id ?? d.id),
+        title: String(data.title ?? ''),
+        type: safeType,
+        description: String(data.description ?? ''),
+        url: String(data.url ?? ''),
+        order: typeof data.order === 'number' ? data.order : 1,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    });
+
+    freshActs.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl'));
+
+    await saveLegalActsToCache(freshActs);
+    setLocalLegalActsDbVersion(metadata.dbVersion);
+
+    return {
+      legalActs: freshActs,
+      syncedFromServer: true
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'legalActs');
+  }
+}
+
 async function bumpDatabaseVersion(
   nextCategories?: string[],
-  knownCurrentVersion?: number
+  knownCurrentVersion?: number,
+  notebookLmUrlOverride?: string | null
 ): Promise<number> {
   let currentVersion = knownCurrentVersion ?? 0;
   let categories = nextCategories ?? DEFAULT_CATEGORIES;
+  let notebookLmUrl: string | null = null;
 
   try {
     const snap = await getDoc(METADATA_DOC_REF);
@@ -185,13 +327,26 @@ async function bumpDatabaseVersion(
       if (!nextCategories && Array.isArray(data.categories) && data.categories.length > 0) {
         categories = data.categories as string[];
       }
+      if (typeof data.notebookLmUrl === 'string' && data.notebookLmUrl.trim().length > 0) {
+        notebookLmUrl = data.notebookLmUrl.trim();
+      }
     }
+
+    if (notebookLmUrlOverride !== undefined) {
+      notebookLmUrl = notebookLmUrlOverride;
+    }
+
     const nextVersion = currentVersion + 1;
-    await setDoc(METADATA_DOC_REF, {
+    const payload: Record<string, unknown> = {
       dbVersion: nextVersion,
       categories,
       updatedAt: serverTimestamp()
-    });
+    };
+    if (notebookLmUrl && notebookLmUrl.trim().length > 0) {
+      payload.notebookLmUrl = notebookLmUrl.trim().slice(0, 1000);
+    }
+
+    await setDoc(METADATA_DOC_REF, payload);
     return nextVersion;
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'system/metadata');
@@ -216,6 +371,9 @@ export async function loadOrCreateUserProgress(
         nick: String(data.nick || preferredNick || user.displayName || 'Kursant'),
         email: String(data.email || user.email || ''),
         masteredIds: Array.isArray(data.masteredIds) ? (data.masteredIds as string[]) : [],
+        completedLessonIds: Array.isArray(data.completedLessonIds)
+          ? (data.completedLessonIds as string[])
+          : [],
         mistakeStreaks:
           data.mistakeStreaks && typeof data.mistakeStreaks === 'object'
             ? (data.mistakeStreaks as Record<string, number>)
@@ -244,6 +402,7 @@ export async function loadOrCreateUserProgress(
       nick: nick.length >= 2 ? nick : 'Kursant',
       email: user.email || '',
       masteredIds: [],
+      completedLessonIds: [],
       mistakeStreaks: {},
       askLecturerIds: [],
       privateNotes: {},
@@ -291,6 +450,7 @@ async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> 
       nick: progress.nick,
       email: progress.email,
       masteredIds: progress.masteredIds.slice(0, 10000),
+      completedLessonIds: (progress.completedLessonIds ?? []).slice(0, 2000),
       mistakeStreaks: progress.mistakeStreaks,
       askLecturerIds: progress.askLecturerIds.slice(0, 5000),
       privateNotes: progress.privateNotes,
@@ -410,6 +570,24 @@ export async function savePrivateNote(
   const updated: UserProgress = {
     ...current,
     privateNotes: nextNotes
+  };
+  await persistUserAndLeaderboard(updated);
+  return updated;
+}
+
+export async function toggleLessonCompleted(
+  current: UserProgress,
+  lessonId: string
+): Promise<UserProgress> {
+  const set = new Set(current.completedLessonIds ?? []);
+  if (set.has(lessonId)) {
+    set.delete(lessonId);
+  } else {
+    set.add(lessonId);
+  }
+  const updated: UserProgress = {
+    ...current,
+    completedLessonIds: Array.from(set)
   };
   await persistUserAndLeaderboard(updated);
   return updated;
@@ -597,16 +775,25 @@ export async function deleteReport(reportId: string): Promise<void> {
 export async function batchImportQuestions(
   items: ParsedQuestionInput[],
   existingCategories: string[],
-  onBatchProgress?: (completedBatches: number, totalBatches: number, savedItems: number) => void
+  onBatchProgress?: (completedBatches: number, totalBatches: number, savedItems: number) => void,
+  importBatchMeta?: { importBatchId: string; importBatchLabel: string }
 ): Promise<{ addedQuestions: Question[]; nextVersion: number; nextCategories: string[]; batchCount: number }> {
+  const importTimestamp = Date.now();
+  const batchId = importBatchMeta?.importBatchId ?? `batch_${importTimestamp}`;
+  const batchLabel =
+    importBatchMeta?.importBatchLabel ??
+    `Import JSON · ${new Date(importTimestamp).toLocaleString('pl-PL')}`;
+
   const newQuestions: Question[] = items.map((item, idx) => ({
-    id: generateQuestionId(idx),
+    id: generateQuestionId(idx, importTimestamp),
     questionHash: item.questionHash,
     category: item.category,
     question: item.question,
     options: item.options,
     correctAnswers: item.correctAnswers,
     hasImagePlaceholder: item.hasImagePlaceholder,
+    importBatchId: batchId.slice(0, 128),
+    importBatchLabel: batchLabel.slice(0, 200),
     ...(item.imageBase64 ? { imageBase64: item.imageBase64 } : {}),
     ...(item.explanation ? { explanation: item.explanation } : {})
   }));
@@ -693,4 +880,270 @@ export async function saveCategoriesList(
   }
 
   return await bumpDatabaseVersion(categories);
+}
+
+/**
+ * Hurtowy zapis skompresowanych obrazków (Base64) do wybranych pytań w paczkach batch
+ * z bezpiecznym limitem rozmiaru żądania Firestore (< 10 MB) oraz podbiciem dbVersion.
+ */
+export async function batchUpdateQuestionImages(
+  updates: { questionId: string; imageBase64: string }[],
+  onBatchProgress?: (completedBatches: number, totalBatches: number, savedItems: number) => void
+): Promise<{ nextVersion: number; batchCount: number }> {
+  if (updates.length === 0) {
+    throw new Error('Brak dopasowanych obrazków do zapisania.');
+  }
+
+  // Dzielimy paczki tak, aby pojedynczy batch nie przekroczył ~3.5 MB ani 100 dokumentów (limit Firestore to 10 MB / 500 ops)
+  const MAX_BATCH_BYTES = 3.5 * 1024 * 1024;
+  const MAX_BATCH_DOCS = 100;
+  const chunks: { questionId: string; imageBase64: string }[][] = [];
+  let currentChunk: { questionId: string; imageBase64: string }[] = [];
+  let currentBytes = 0;
+
+  for (const item of updates) {
+    const itemBytes = item.imageBase64.length + 512;
+    if (
+      currentChunk.length > 0 &&
+      (currentChunk.length >= MAX_BATCH_DOCS || currentBytes + itemBytes > MAX_BATCH_BYTES)
+    ) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentBytes = 0;
+    }
+    currentChunk.push(item);
+    currentBytes += itemBytes;
+  }
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  let savedItems = 0;
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const batch = writeBatch(db);
+      for (const item of chunk) {
+        const ref = doc(db, 'questions', item.questionId);
+        batch.update(ref, {
+          imageBase64: item.imageBase64,
+          hasImagePlaceholder: false,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await batch.commit();
+      savedItems += chunk.length;
+      onBatchProgress?.(i + 1, chunks.length, savedItems);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, 'questions');
+  }
+
+  const nextVersion = await bumpDatabaseVersion();
+  return { nextVersion, batchCount: chunks.length };
+}
+
+/**
+ * Masowa zmiana kategorii dla zaznaczonych pytań w paczkach batch po max 400 rekordów.
+ */
+export async function batchChangeQuestionsCategory(
+  questionIds: string[],
+  targetCategory: string,
+  existingCategories: string[]
+): Promise<{ nextVersion: number; nextCategories: string[] }> {
+  const cleanCategory = targetCategory.trim().slice(0, 120);
+  if (!cleanCategory || questionIds.length === 0) {
+    throw new Error('Wybierz pytania oraz docelową kategorię.');
+  }
+
+  try {
+    for (let i = 0; i < questionIds.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = questionIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const qId of chunk) {
+        batch.update(doc(db, 'questions', qId), {
+          category: cleanCategory,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, 'questions');
+  }
+
+  const nextCategories = Array.from(new Set([...existingCategories, cleanCategory]));
+  const nextVersion = await bumpDatabaseVersion(nextCategories);
+  return { nextVersion, nextCategories };
+}
+
+/**
+ * Masowe czyszczenie obrazków (imageBase64: null) i przywrócenie hasImagePlaceholder: true
+ * w paczkach batch po max 400 rekordów.
+ */
+export async function batchClearQuestionImages(
+  questionIds: string[]
+): Promise<number> {
+  if (questionIds.length === 0) {
+    throw new Error('Brak pytań do wyczyszczenia obrazków.');
+  }
+
+  try {
+    for (let i = 0; i < questionIds.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = questionIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const qId of chunk) {
+        batch.update(doc(db, 'questions', qId), {
+          imageBase64: null,
+          hasImagePlaceholder: true,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, 'questions');
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+/**
+ * Masowe trwałe usuwanie pytań z Firestore w paczkach batch po max 400 rekordów.
+ */
+export async function batchDeleteQuestions(
+  questionIds: string[]
+): Promise<number> {
+  if (questionIds.length === 0) {
+    throw new Error('Brak pytań do usunięcia.');
+  }
+
+  try {
+    for (let i = 0; i < questionIds.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = questionIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const qId of chunk) {
+        batch.delete(doc(db, 'questions', qId));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, 'questions');
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+// --- BAZA WIEDZY (LEKCJE I GOOGLE NOTEBOOKLM) ---
+
+export function generateLessonId(): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `lesson_${Date.now()}_${rand}`;
+}
+
+export async function saveAdminNotebookLmUrl(
+  rawUrl: string
+): Promise<{ nextVersion: number; notebookLmUrl?: string }> {
+  const trimmed = rawUrl.trim();
+  if (trimmed.length > 0 && !/^https?:\/\/.+/i.test(trimmed)) {
+    throw new Error('Link do Google NotebookLM musi zaczynać się od https:// lub http://');
+  }
+  const safeUrl = trimmed.length > 0 ? trimmed.slice(0, 1000) : null;
+  const nextVersion = await bumpDatabaseVersion(undefined, undefined, safeUrl);
+  return {
+    nextVersion,
+    notebookLmUrl: safeUrl ?? undefined
+  };
+}
+
+export async function saveAdminLesson(
+  lesson: Lesson,
+  isNew: boolean,
+  existingCategories: string[]
+): Promise<{ nextVersion: number; nextCategories: string[] }> {
+  const ref = doc(db, 'lessons', lesson.id);
+  const payload: Record<string, unknown> = {
+    id: lesson.id,
+    category: lesson.category.trim().slice(0, 120),
+    title: lesson.title.trim().slice(0, 250),
+    order: Math.max(0, Math.min(10000, Math.round(lesson.order))),
+    legalBasis: lesson.legalBasis.trim().slice(0, 300),
+    content: lesson.content.trim().slice(0, 50000),
+    keyTakeaways: lesson.keyTakeaways.trim().slice(0, 8000),
+    updatedAt: serverTimestamp()
+  };
+  if (isNew) {
+    payload.createdAt = serverTimestamp();
+  } else if (lesson.createdAt) {
+    payload.createdAt = lesson.createdAt;
+  }
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `lessons/${lesson.id}`);
+  }
+
+  const mergedCategories = Array.from(new Set([...existingCategories, lesson.category.trim()]));
+  const nextVersion = await bumpDatabaseVersion(mergedCategories);
+  return { nextVersion, nextCategories: mergedCategories };
+}
+
+export async function deleteAdminLesson(lessonId: string): Promise<number> {
+  try {
+    await deleteDoc(doc(db, 'lessons', lessonId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `lessons/${lessonId}`);
+  }
+  return await bumpDatabaseVersion();
+}
+
+// --- AKTY PRAWNE (kolekcja legalActs) ---
+
+export function generateLegalActId(): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `act_${Date.now()}_${rand}`;
+}
+
+export async function saveAdminLegalAct(
+  act: LegalAct,
+  isNew: boolean
+): Promise<number> {
+  const trimmedUrl = act.url.trim();
+  if (!/^https?:\/\/.+/i.test(trimmedUrl)) {
+    throw new Error('Link do dokumentu musi zaczynać się od https:// lub http://');
+  }
+
+  const ref = doc(db, 'legalActs', act.id);
+  const payload: Record<string, unknown> = {
+    id: act.id,
+    title: act.title.trim().slice(0, 300),
+    type: act.type,
+    description: act.description.trim().slice(0, 600),
+    url: trimmedUrl.slice(0, 1500),
+    order: Math.max(0, Math.min(10000, Math.round(act.order))),
+    updatedAt: serverTimestamp()
+  };
+  if (isNew) {
+    payload.createdAt = serverTimestamp();
+  } else if (act.createdAt) {
+    payload.createdAt = act.createdAt;
+  }
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `legalActs/${act.id}`);
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+export async function deleteAdminLegalAct(actId: string): Promise<number> {
+  try {
+    await deleteDoc(doc(db, 'legalActs', actId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `legalActs/${actId}`);
+  }
+  return await bumpDatabaseVersion();
 }

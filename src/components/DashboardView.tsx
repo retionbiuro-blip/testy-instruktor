@@ -1,6 +1,7 @@
 import {
   ArrowRight,
   Award,
+  BookMarked,
   BookOpen,
   ClipboardCheck,
   Flame,
@@ -13,11 +14,13 @@ import {
   Zap
 } from 'lucide-react';
 import { ALL_CATEGORIES_KEY, ALL_CATEGORIES_LABEL } from '../config';
-import { AppView, LeaderboardEntry, Question, UserProgress } from '../types';
+import { AppView, LeaderboardEntry, Lesson, Question, UserProgress } from '../types';
 
 interface DashboardViewProps {
   questions: Question[];
+  lessons: Lesson[];
   categories: string[];
+  notebookLmUrl?: string;
   progress: UserProgress;
   leaderboard: LeaderboardEntry[];
   selectedCategory: string;
@@ -33,7 +36,9 @@ interface DashboardViewProps {
 
 export function DashboardView({
   questions,
+  lessons,
   categories,
+  notebookLmUrl,
   progress,
   leaderboard,
   selectedCategory,
@@ -47,6 +52,9 @@ export function DashboardView({
   syncing
 }: DashboardViewProps) {
   const masteredSet = new Set(progress.masteredIds);
+  const completedLessonsSet = new Set(progress.completedLessonIds ?? []);
+  const completedLessonsCount = lessons.filter((l) => completedLessonsSet.has(l.id)).length;
+  const hasNotebookLm = Boolean(notebookLmUrl && /^https?:\/\/.+/i.test(notebookLmUrl.trim()));
   const mistakesCount = Object.keys(progress.mistakeStreaks).length;
   const lecturerCount = progress.askLecturerIds.length;
   const totalQuestions = questions.length;
@@ -217,6 +225,53 @@ export function DashboardView({
           )}
         </section>
       )}
+
+      {/* Kafelek Baza Wiedzy / Materiały */}
+      <section aria-label="Baza Wiedzy i Materiały do nauki">
+        <button
+          type="button"
+          onClick={() => onStartMode('knowledge')}
+          className="flex w-full cursor-pointer flex-col justify-between gap-4 rounded-xl border border-slate-200 bg-white p-5 text-left transition-colors hover:border-blue-400 sm:flex-row sm:items-center dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-600"
+        >
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/50 dark:text-blue-400">
+              <BookMarked className="h-5 w-5" aria-hidden="true" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <span className="font-semibold text-blue-700 dark:text-blue-400">
+                  Teoria przed testami
+                </span>
+                {!isGuest && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="font-mono tabular-nums">
+                      Przerobiono {completedLessonsCount}/{lessons.length} rozdziałów
+                    </span>
+                  </>
+                )}
+                {hasNotebookLm && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>Asystent NotebookLM aktywny</span>
+                  </>
+                )}
+              </div>
+              <h2 className="font-display mt-1 text-base font-bold text-slate-900 dark:text-white">
+                Baza Wiedzy / Materiały (Ustawy i Podsumowania)
+              </h2>
+              <p className="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                Przerabiaj uporządkowane rozdziały z aktów prawnych, korzystaj z ramek egzaminacyjnych i pytaj Wirtualnego Wykładowcę w Google NotebookLM.
+              </p>
+            </div>
+          </div>
+
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-blue-700 whitespace-nowrap dark:text-blue-400">
+            <span>{isGuest ? 'Zobacz szczegóły' : 'Otwórz Bazę Wiedzy'}</span>
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </span>
+        </button>
+      </section>
 
       {/* Tryby nauki i egzaminów */}
       {totalQuestions > 0 && (
