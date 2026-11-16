@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Copy,
   ImagePlus,
   Images,
   Loader2,
@@ -31,6 +32,7 @@ interface UploadedImageItem {
   file: File;
   previewUrl: string;
   sizeKB: number;
+  isDuplicated?: boolean;
 }
 
 interface BulkImageMatcherProps {
@@ -188,6 +190,27 @@ export function BulkImageMatcher({
     setUploadedImages((prev) => prev.filter((_, idx) => idx !== imageIndex));
   }
 
+  function handleDuplicateImageFromAbove(
+    sourceImage: UploadedImageItem,
+    targetImageIndex: number
+  ) {
+    const duplicatedItem: UploadedImageItem = {
+      id: `img_dup_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      file: sourceImage.file,
+      previewUrl: URL.createObjectURL(sourceImage.file),
+      sizeKB: sourceImage.sizeKB,
+      isDuplicated: true
+    };
+
+    setUploadedImages((prev) => {
+      const insertAt =
+        targetImageIndex >= 0 && targetImageIndex <= prev.length ? targetImageIndex : prev.length;
+      const next = [...prev];
+      next.splice(insertAt, 0, duplicatedItem);
+      return next;
+    });
+  }
+
   function handleSkipQuestion(questionId: string) {
     setSkippedQuestionIds((prev) => (prev.includes(questionId) ? prev : [...prev, questionId]));
   }
@@ -207,16 +230,21 @@ export function BulkImageMatcher({
     try {
       const total = matchedPairs.length;
       const updates: { questionId: string; imageBase64: string }[] = [];
+      const compressedByFile = new Map<File, string>();
 
       for (let i = 0; i < total; i++) {
         const pair = matchedPairs[i];
-        setProgressText(`Kompresowanie obrazka ${i + 1} z ${total} (${pair.image.file.name})...`);
-        setProgressPercent(Math.round(((i + 0.5) / (total * 1.2)) * 100));
-
-        const compressed = await compressImageToBase64(pair.image.file);
+        let base64 = compressedByFile.get(pair.image.file);
+        if (!base64) {
+          setProgressText(`Kompresowanie obrazka ${i + 1} z ${total} (${pair.image.file.name})...`);
+          setProgressPercent(Math.round(((i + 0.5) / (total * 1.2)) * 100));
+          const compressed = await compressImageToBase64(pair.image.file);
+          base64 = compressed.base64;
+          compressedByFile.set(pair.image.file, base64);
+        }
         updates.push({
           questionId: pair.question.id,
-          imageBase64: compressed.base64
+          imageBase64: base64
         });
       }
 
@@ -443,119 +471,156 @@ export function BulkImageMatcher({
           </div>
 
           <div className="divide-y divide-slate-200 dark:divide-slate-800">
-            {matchedRows.map((row) => (
-              <div
-                key={row.question.id}
-                className={`grid grid-cols-1 gap-4 p-4 transition-colors md:grid-cols-12 md:items-center ${
-                  row.isSkipped
-                    ? 'bg-slate-50/80 opacity-75 dark:bg-slate-950/60'
-                    : row.image
-                      ? 'bg-white dark:bg-slate-900'
-                      : 'bg-amber-50/20 dark:bg-amber-950/10'
-                }`}
-              >
-                {/* Lewa strona: treść pytania i podpowiedź w nawiasie */}
-                <div className="space-y-1.5 md:col-span-7">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                    <span className="font-mono font-bold text-slate-700 tabular-nums dark:text-slate-200">
-                      #{row.rowIdx + 1}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-medium text-blue-700 dark:text-blue-400">
-                      {row.question.category}
-                    </span>
-                    {row.isSkipped && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-semibold text-amber-700 dark:text-amber-400">
-                          Pominięte (zostaje bez obrazka)
+            {matchedRows.map((row) => {
+              const prevRow = row.rowIdx > 0 ? matchedRows[row.rowIdx - 1] : null;
+              const prevRowImage = prevRow && !prevRow.isSkipped ? prevRow.image : null;
+
+              return (
+                <div
+                  key={row.question.id}
+                  className={`grid grid-cols-1 gap-4 p-4 transition-colors md:grid-cols-12 md:items-center ${
+                    row.isSkipped
+                      ? 'bg-slate-50/80 opacity-75 dark:bg-slate-950/60'
+                      : row.image
+                        ? 'bg-white dark:bg-slate-900'
+                        : 'bg-amber-50/20 dark:bg-amber-950/10'
+                  }`}
+                >
+                  {/* Lewa strona: treść pytania i podpowiedź w nawiasie */}
+                  <div className="space-y-1.5 md:col-span-7">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="font-mono font-bold text-slate-700 tabular-nums dark:text-slate-200">
+                        #{row.rowIdx + 1}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-medium text-blue-700 dark:text-blue-400">
+                        {row.question.category}
+                      </span>
+                      {row.isSkipped && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span className="font-semibold text-amber-700 dark:text-amber-400">
+                            Pominięte (zostaje bez obrazka)
+                          </span>
+                        </>
+                      )}
+                    </div>
+
+                    <p className="text-sm leading-snug font-medium text-slate-900 dark:text-white">
+                      {row.question.question}
+                      {row.question.explanation && (
+                        <span className="ml-1.5 text-xs font-normal text-slate-500 dark:text-slate-400">
+                          ({row.question.explanation})
                         </span>
-                      </>
-                    )}
+                      )}
+                    </p>
                   </div>
 
-                  <p className="text-sm leading-snug font-medium text-slate-900 dark:text-white">
-                    {row.question.question}
-                    {row.question.explanation && (
-                      <span className="ml-1.5 text-xs font-normal text-slate-500 dark:text-slate-400">
-                        ({row.question.explanation})
-                      </span>
-                    )}
-                  </p>
-                </div>
+                  {/* Prawa strona: miniaturka + przyciski korekty */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:col-span-5">
+                    {row.isSkipped ? (
+                      <div className="flex flex-1 items-center justify-between gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
+                        <span>Pytanie pominięte — kolejne obrazki przesunięto w dół.</span>
+                        <button
+                          type="button"
+                          disabled={saving}
+                          onClick={() => handleUnskipQuestion(row.question.id)}
+                          className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                        >
+                          <RotateCcw className="h-3 w-3" aria-hidden="true" />
+                          <span>Przywróć</span>
+                        </button>
+                      </div>
+                    ) : row.image ? (
+                      <div className="flex flex-1 items-center gap-3">
+                        <img
+                          src={row.image.previewUrl}
+                          alt={row.image.file.name}
+                          className="h-20 w-28 shrink-0 rounded-lg border border-slate-200 bg-slate-50 object-contain p-0.5 dark:border-slate-700 dark:bg-slate-950"
+                        />
+                        <div className="min-w-0 flex-1 space-y-2">
+                          <div>
+                            <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
+                              {row.image.file.name}
+                            </p>
+                            <p className="font-mono text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+                              Plik #{row.imageIndex + 1}
+                              {row.image.isDuplicated ? ' (powielony z góry)' : ''} · {row.image.sizeKB} KB (przed kompresją)
+                            </p>
+                          </div>
 
-                {/* Prawa strona: miniaturka + przyciski korekty */}
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:col-span-5">
-                  {row.isSkipped ? (
-                    <div className="flex flex-1 items-center justify-between gap-3 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-2.5 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-400">
-                      <span>Pytanie pominięte — kolejne obrazki przesunięto w dół.</span>
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() => handleUnskipQuestion(row.question.id)}
-                        className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                      >
-                        <RotateCcw className="h-3 w-3" aria-hidden="true" />
-                        <span>Przywróć</span>
-                      </button>
-                    </div>
-                  ) : row.image ? (
-                    <div className="flex flex-1 items-center gap-3">
-                      <img
-                        src={row.image.previewUrl}
-                        alt={row.image.file.name}
-                        className="h-20 w-28 shrink-0 rounded-lg border border-slate-200 bg-slate-50 object-contain p-0.5 dark:border-slate-700 dark:bg-slate-950"
-                      />
-                      <div className="min-w-0 flex-1 space-y-2">
-                        <div>
-                          <p className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
-                            {row.image.file.name}
-                          </p>
-                          <p className="font-mono text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
-                            Plik #{row.imageIndex + 1} · {row.image.sizeKB} KB (przed kompresją)
-                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={() => handleDiscardImageAtIndex(row.imageIndex)}
+                              className="flex cursor-pointer items-center gap-1 rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/60"
+                            >
+                              <Trash2 className="h-3 w-3" aria-hidden="true" />
+                              <span>Odrzuć ten obrazek</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={saving}
+                              onClick={() => handleSkipQuestion(row.question.id)}
+                              className="flex cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                            >
+                              <SkipForward className="h-3 w-3" aria-hidden="true" />
+                              <span>Pomiń to pytanie</span>
+                            </button>
+
+                            {prevRowImage && (
+                              <button
+                                type="button"
+                                disabled={saving}
+                                title="Skopiuje obrazek przypisany do pytania powyżej i przesunie kolejne pliki o 1 w dół"
+                                onClick={() =>
+                                  handleDuplicateImageFromAbove(prevRowImage, row.imageIndex)
+                                }
+                                className="flex cursor-pointer items-center gap-1 rounded-md border border-blue-200 bg-blue-50/80 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/70"
+                              >
+                                <Copy className="h-3 w-3" aria-hidden="true" />
+                                <span>Powiel obrazek z góry</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
-
-                        <div className="flex flex-wrap gap-1.5">
-                          <button
-                            type="button"
-                            disabled={saving}
-                            onClick={() => handleDiscardImageAtIndex(row.imageIndex)}
-                            className="flex cursor-pointer items-center gap-1 rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100 disabled:opacity-50 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/60"
-                          >
-                            <Trash2 className="h-3 w-3" aria-hidden="true" />
-                            <span>Odrzuć ten obrazek</span>
-                          </button>
-
+                      </div>
+                    ) : (
+                      <div className="flex flex-1 flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-2.5 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
+                        <span>Brak dopasowanego obrazka</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {prevRowImage && (
+                            <button
+                              type="button"
+                              disabled={saving}
+                              title="Skopiuje obrazek przypisany do pytania powyżej"
+                              onClick={() =>
+                                handleDuplicateImageFromAbove(prevRowImage, uploadedImages.length)
+                              }
+                              className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-blue-200 bg-blue-50/80 px-2 py-1 text-[11px] font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50 dark:border-blue-900/60 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-950/70"
+                            >
+                              <Copy className="h-3 w-3" aria-hidden="true" />
+                              <span>Powiel obrazek z góry</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             disabled={saving}
                             onClick={() => handleSkipQuestion(row.question.id)}
-                            className="flex cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                            className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
                           >
                             <SkipForward className="h-3 w-3" aria-hidden="true" />
                             <span>Pomiń to pytanie</span>
                           </button>
                         </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-1 items-center justify-between gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-2.5 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-                      <span>Brak dopasowanego obrazka</span>
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() => handleSkipQuestion(row.question.id)}
-                        className="flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
-                      >
-                        <SkipForward className="h-3 w-3" aria-hidden="true" />
-                        <span>Pomiń to pytanie</span>
-                      </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
