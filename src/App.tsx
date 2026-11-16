@@ -13,19 +13,25 @@ import { OfflineIndicator } from './components/PWAInstallButton';
 import { StudyView } from './components/StudyView';
 import { UserInboxModal } from './components/UserInboxModal';
 import { ADMIN_EMAIL, ALL_CATEGORIES_KEY, DEFAULT_CATEGORIES } from './config';
+import { DEFAULT_EXAM_TOPICS, DIDACTICS_GLOSSARY } from './data/knowledgePracticeData';
 import { auth, testFirestoreConnection } from './lib/firebase';
-import { getStoredTheme, saveQuestionsToCache, setStoredTheme } from './lib/indexedDb';
+import { getStoredTheme, setStoredTheme } from './lib/indexedDb';
 import {
   fetchLeaderboard,
   fetchReports,
+  fetchSystemWrongCounts,
   loadOrCreateUserProgress,
   subscribeToUserUnreadNotifications,
+  syncExamTopicsWithCache,
+  syncGlossaryTermsWithCache,
   syncLegalActsWithCache,
   syncLessonsWithCache,
   syncQuestionsWithCache
 } from './services/firestoreService';
 import {
   AppView,
+  ExamTopic,
+  GlossaryTerm,
   LeaderboardEntry,
   LegalAct,
   Lesson,
@@ -43,6 +49,7 @@ const GUEST_PROGRESS: UserProgress = {
   mistakeStreaks: {},
   askLecturerIds: [],
   privateNotes: {},
+  savedOutlines: [],
   totalAnswered: 0,
   totalCorrect: 0,
   streakDays: 0,
@@ -62,18 +69,24 @@ export default function App() {
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES_KEY);
   const [selectedLicenseCategory, setSelectedLicenseCategory] = useState<LicenseCategoryFilter>('B');
-  const [adminInitialTab, setAdminInitialTab] = useState<'import' | 'lessons' | 'legal-acts' | undefined>(
-    undefined
-  );
+  const [adminInitialTab, setAdminInitialTab] = useState<
+    'import' | 'lessons' | 'legal-acts' | 'exam-topics' | 'glossary' | undefined
+  >(undefined);
+  const [examInitialPart, setExamInitialPart] = useState<'hub' | 'part1' | 'part2'>('hub');
+  const [examEntryNonce, setExamEntryNonce] = useState<number>(0);
+  const [preselectedExamTopicId, setPreselectedExamTopicId] = useState<string | null>(null);
 
   const [questions, setQuestions] = useState<Question[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [legalActs, setLegalActs] = useState<LegalAct[]>([]);
+  const [examTopics, setExamTopics] = useState<ExamTopic[]>([]);
+  const [glossaryTerms, setGlossaryTerms] = useState<GlossaryTerm[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [notebookLmUrl, setNotebookLmUrl] = useState<string | undefined>(undefined);
   const [dbVersion, setDbVersion] = useState<number>(0);
   const [progress, setProgress] = useState<UserProgress | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [groupWrongCounts, setGroupWrongCounts] = useState<Record<string, number>>({});
   const [reports, setReports] = useState<ReportItem[]>([]);
 
   const [loadingData, setLoadingData] = useState(false);
@@ -124,25 +137,31 @@ export default function App() {
       try {
         await testFirestoreConnection();
 
-        const [syncRes, userProg, board] = await Promise.all([
+        const [syncRes, userProg, board, statsMap] = await Promise.all([
           syncQuestionsWithCache(adminFlag, false),
           loadOrCreateUserProgress(user, nickHint),
-          fetchLeaderboard()
+          fetchLeaderboard(),
+          fetchSystemWrongCounts()
         ]);
 
-        const [lessonsRes, actsRes] = await Promise.all([
+        const [lessonsRes, actsRes, topicsRes, glossaryRes] = await Promise.all([
           syncLessonsWithCache(syncRes.metadata, false),
-          syncLegalActsWithCache(syncRes.metadata, false)
+          syncLegalActsWithCache(syncRes.metadata, false),
+          syncExamTopicsWithCache(syncRes.metadata, false),
+          syncGlossaryTermsWithCache(syncRes.metadata, false)
         ]);
 
         setQuestions(syncRes.questions);
         setLessons(lessonsRes.lessons);
         setLegalActs(actsRes.legalActs);
+        setExamTopics(topicsRes.examTopics);
+        setGlossaryTerms(glossaryRes.glossaryTerms);
         setCategories(syncRes.metadata.categories);
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
         setProgress(userProg);
         setLeaderboard(board);
+        setGroupWrongCounts(statsMap);
 
         if (adminFlag) {
           const reps = await fetchReports();
@@ -214,21 +233,27 @@ export default function App() {
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
       } else {
-        const [syncRes, board] = await Promise.all([
+        const [syncRes, board, statsMap] = await Promise.all([
           syncQuestionsWithCache(isAdmin, false),
-          fetchLeaderboard()
+          fetchLeaderboard(),
+          fetchSystemWrongCounts()
         ]);
-        const [lessonsRes, actsRes] = await Promise.all([
+        const [lessonsRes, actsRes, topicsRes, glossaryRes] = await Promise.all([
           syncLessonsWithCache(syncRes.metadata, false),
-          syncLegalActsWithCache(syncRes.metadata, false)
+          syncLegalActsWithCache(syncRes.metadata, false),
+          syncExamTopicsWithCache(syncRes.metadata, false),
+          syncGlossaryTermsWithCache(syncRes.metadata, false)
         ]);
         setQuestions(syncRes.questions);
         setLessons(lessonsRes.lessons);
         setLegalActs(actsRes.legalActs);
+        setExamTopics(topicsRes.examTopics);
+        setGlossaryTerms(glossaryRes.glossaryTerms);
         setCategories(syncRes.metadata.categories);
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
         setDbVersion(syncRes.metadata.dbVersion);
         setLeaderboard(board);
+        setGroupWrongCounts(statsMap);
       }
     } finally {
       setSyncing(false);
@@ -246,6 +271,16 @@ export default function App() {
     }
   }, [isGuest]);
 
+  const handleRefreshStats = useCallback(async () => {
+    if (isGuest) return;
+    try {
+      const statsMap = await fetchSystemWrongCounts();
+      setGroupWrongCounts(statsMap);
+    } catch (err) {
+      console.warn('Nie udało się odświeżyć statystyk system/stats:', err);
+    }
+  }, [isGuest]);
+
   const handleRefreshReports = useCallback(async () => {
     if (!isAdmin) return;
     const reps = await fetchReports();
@@ -253,18 +288,26 @@ export default function App() {
   }, [isAdmin]);
 
   const handleNavigate = useCallback(
-    (view: AppView) => {
+    (view: AppView, keepExamState = false) => {
       if (view === 'admin' && !isAdmin) return;
       if (view !== 'admin') {
         setAdminInitialTab(undefined);
+      }
+      if (view === 'exam' && !keepExamState) {
+        setExamInitialPart('hub');
+        setPreselectedExamTopicId(null);
+        setExamEntryNonce((n) => n + 1);
       }
       setCurrentView(view);
       if (!isGuest && (view === 'leaderboard' || view === 'dashboard')) {
         void handleRefreshLeaderboard();
       }
+      if (!isGuest && view === 'dashboard') {
+        void handleRefreshStats();
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [isAdmin, isGuest, handleRefreshLeaderboard]
+    [isAdmin, isGuest, handleRefreshLeaderboard, handleRefreshStats]
   );
 
   const handleStartMode = useCallback(
@@ -273,7 +316,24 @@ export default function App() {
         setSelectedCategory(cat);
       }
       setCustomStudyQueue(null);
+      if (view === 'exam') {
+        setExamInitialPart('part1');
+        setPreselectedExamTopicId(null);
+        setExamEntryNonce((n) => n + 1);
+        handleNavigate('exam', true);
+        return;
+      }
       handleNavigate(view);
+    },
+    [handleNavigate]
+  );
+
+  const handlePracticeTopicInExam = useCallback(
+    (topicId: string) => {
+      setPreselectedExamTopicId(topicId);
+      setExamInitialPart('part2');
+      setExamEntryNonce((n) => n + 1);
+      handleNavigate('exam', true);
     },
     [handleNavigate]
   );
@@ -292,12 +352,12 @@ export default function App() {
 
   const handleIncrementWrongCounts = useCallback((questionIds: string[]) => {
     if (questionIds.length === 0) return;
-    const wrongSet = new Set(questionIds);
-    setQuestions((prev) => {
-      const next = prev.map((q) =>
-        wrongSet.has(q.id) ? { ...q, wrongCount: (q.wrongCount ?? 0) + 1 } : q
-      );
-      void saveQuestionsToCache(next);
+    const uniqueIds = Array.from(new Set(questionIds.filter(Boolean)));
+    setGroupWrongCounts((prev) => {
+      const next = { ...prev };
+      for (const qId of uniqueIds) {
+        next[qId] = (next[qId] ?? 0) + 1;
+      }
       return next;
     });
   }, []);
@@ -365,9 +425,13 @@ export default function App() {
   const mistakesCount = activeProgress ? Object.keys(activeProgress.mistakeStreaks).length : 0;
   const openReportsCount = reports.filter((r) => r.status === 'open').length;
   const unreadNotifications = guestModeActive ? 0 : (activeProgress?.unreadNotifications ?? 0);
+  const effectiveExamTopics =
+    guestModeActive || examTopics.length === 0 ? DEFAULT_EXAM_TOPICS : examTopics;
+  const effectiveGlossaryTerms =
+    guestModeActive || glossaryTerms.length === 0 ? DIDACTICS_GLOSSARY : glossaryTerms;
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-20 text-slate-900 md:pb-10 dark:bg-slate-950 dark:text-slate-100">
+    <div className="min-h-screen bg-slate-50 pb-32 text-slate-900 md:pb-12 dark:bg-slate-950 dark:text-slate-100">
       <Navbar
         currentView={currentView}
         onNavigate={handleNavigate}
@@ -441,6 +505,7 @@ export default function App() {
                 notebookLmUrl={notebookLmUrl}
                 progress={activeProgress}
                 leaderboard={leaderboard}
+                groupWrongCounts={guestModeActive ? {} : groupWrongCounts}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
                 selectedLicenseCategory={selectedLicenseCategory}
@@ -459,6 +524,8 @@ export default function App() {
             {currentView === 'knowledge' && (
               <KnowledgeBaseView
                 lessons={lessons}
+                examTopics={effectiveExamTopics}
+                glossaryTerms={effectiveGlossaryTerms}
                 categories={categories}
                 notebookLmUrl={notebookLmUrl}
                 progress={activeProgress}
@@ -467,6 +534,7 @@ export default function App() {
                 isAdmin={isAdmin}
                 onRequireAuth={handleRequireAuth}
                 onPracticeCategory={(cat) => handleStartMode('study', cat)}
+                onPracticeTopicInExam={handlePracticeTopicInExam}
                 onOpenAdminMaterials={() => {
                   setAdminInitialTab('lessons');
                   handleNavigate('admin');
@@ -504,6 +572,7 @@ export default function App() {
                 onFocusQuestionConsumed={() => setFocusedQuestionId(null)}
                 customQueue={currentView === 'study' ? customStudyQueue : null}
                 onClearCustomQueue={() => setCustomStudyQueue(null)}
+                groupWrongCounts={guestModeActive ? {} : groupWrongCounts}
                 onQuestionsWrong={handleIncrementWrongCounts}
                 progress={activeProgress}
                 onProgressChange={setProgress}
@@ -517,6 +586,11 @@ export default function App() {
             {(currentView === 'exam' || currentView === 'quick10') && (
               <ExamView
                 mode={currentView}
+                examTopics={effectiveExamTopics}
+                examInitialPart={examInitialPart}
+                examEntryNonce={examEntryNonce}
+                preselectedTopicId={preselectedExamTopicId}
+                onPreselectedTopicConsumed={() => setPreselectedExamTopicId(null)}
                 questions={questions}
                 categories={categories}
                 defaultCategory={selectedCategory}
@@ -547,6 +621,8 @@ export default function App() {
                 questions={questions}
                 lessons={lessons}
                 legalActs={legalActs}
+                examTopics={examTopics}
+                glossaryTerms={glossaryTerms}
                 categories={categories}
                 notebookLmUrl={notebookLmUrl}
                 reports={reports}
@@ -563,6 +639,14 @@ export default function App() {
                 }}
                 onLegalActsUpdated={(nextActs, nextVer) => {
                   setLegalActs(nextActs);
+                  setDbVersion(nextVer);
+                }}
+                onExamTopicsUpdated={(nextTopics, nextVer) => {
+                  setExamTopics(nextTopics);
+                  setDbVersion(nextVer);
+                }}
+                onGlossaryTermsUpdated={(nextTerms, nextVer) => {
+                  setGlossaryTerms(nextTerms);
                   setDbVersion(nextVer);
                 }}
                 onNotebookLmUpdated={(nextUrl, nextVer) => {

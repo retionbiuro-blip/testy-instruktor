@@ -182,7 +182,7 @@ export function OfflineIndicator() {
   return (
     <div
       role="status"
-      className="fixed bottom-16 left-4 z-40 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 shadow-sm md:bottom-4 dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-200"
+      className="fixed bottom-28 left-4 z-40 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 shadow-sm md:bottom-4 dark:border-amber-800 dark:bg-amber-950/90 dark:text-amber-200"
     >
       <WifiOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       <span>Tryb offline — korzystasz z zapisanej bazy pytań</span>

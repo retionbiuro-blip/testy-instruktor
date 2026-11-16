@@ -25,16 +25,24 @@ import {
 } from '../config';
 import { OperationType, db, handleFirestoreError } from '../lib/firebase';
 import {
+  getCachedExamTopics,
+  getCachedGlossaryTerms,
   getCachedLegalActs,
   getCachedLessons,
   getCachedQuestions,
   getLocalDbVersion,
+  getLocalExamTopicsDbVersion,
+  getLocalGlossaryTermsDbVersion,
   getLocalLegalActsDbVersion,
   getLocalLessonsDbVersion,
+  saveExamTopicsToCache,
+  saveGlossaryTermsToCache,
   saveLegalActsToCache,
   saveLessonsToCache,
   saveQuestionsToCache,
   setLocalDbVersion,
+  setLocalExamTopicsDbVersion,
+  setLocalGlossaryTermsDbVersion,
   setLocalLegalActsDbVersion,
   setLocalLessonsDbVersion
 } from '../lib/indexedDb';
@@ -48,18 +56,23 @@ import {
 import {
   CommentItem,
   ExamHistoryItem,
+  ExamTopic,
+  GlossaryTerm,
   LeaderboardEntry,
   LegalAct,
   Lesson,
+  LessonPlanDraft,
   LicenseCategory,
   ParsedQuestionInput,
   Question,
   ReportItem,
+  SavedOutlineEntry,
   SystemMetadata,
   UserProgress
 } from '../types';
 
 const METADATA_DOC_REF = doc(db, 'system', 'metadata');
+const STATS_DOC_REF = doc(db, 'system', 'stats');
 
 function timestampToDate(val: unknown): Date | null {
   if (val instanceof Timestamp) return val.toDate();
@@ -67,6 +80,78 @@ function timestampToDate(val: unknown): Date | null {
     return (val as { toDate: () => Date }).toDate();
   }
   return null;
+}
+
+function sanitizeSavedOutlineDraft(raw: unknown, fallbackTopicTitle: string): LessonPlanDraft {
+  const src = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const rawChecked =
+    src.checkedSteps && typeof src.checkedSteps === 'object'
+      ? (src.checkedSteps as Record<string, unknown>)
+      : {};
+  const checkedSteps: Record<string, boolean> = {};
+  for (const [k, v] of Object.entries(rawChecked)) {
+    if (Boolean(v)) {
+      checkedSteps[String(k)] = true;
+    }
+  }
+  return {
+    topicTitle: String(src.topicTitle ?? fallbackTopicTitle).slice(0, 400),
+    generalGoal: String(src.generalGoal ?? '').slice(0, 2500),
+    knowledgeGoal: String(src.knowledgeGoal ?? '').slice(0, 2500),
+    attitudeGoal: String(src.attitudeGoal ?? '').slice(0, 2500),
+    methodsPodajaca: Boolean(src.methodsPodajaca),
+    methodsProblemowa: Boolean(src.methodsProblemowa),
+    methodsEksponujaca: Boolean(src.methodsEksponujaca),
+    methodsNotes: String(src.methodsNotes ?? '').slice(0, 1500),
+    selectedAids: Array.isArray(src.selectedAids)
+      ? src.selectedAids.slice(0, 30).map((item) => String(item).slice(0, 150))
+      : [],
+    customAids: String(src.customAids ?? '').slice(0, 1000),
+    introMinutes: String(src.introMinutes ?? '2').slice(0, 10),
+    introNotes: String(src.introNotes ?? '').slice(0, 2500),
+    mainMinutes: String(src.mainMinutes ?? '11').slice(0, 10),
+    mainNotes: String(src.mainNotes ?? '').slice(0, 4000),
+    summaryMinutes: String(src.summaryMinutes ?? '2').slice(0, 10),
+    summaryNotes: String(src.summaryNotes ?? '').slice(0, 2500),
+    checkedSteps
+  };
+}
+
+export function sanitizeSavedOutlines(raw: unknown): SavedOutlineEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const result: SavedOutlineEntry[] = [];
+  for (const item of raw.slice(0, 50)) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    const topicTitle = String(obj.topicTitle ?? 'Własny temat wystąpienia').trim().slice(0, 400) || 'Własny temat wystąpienia';
+    const rawDuration = Number(obj.durationMinutes);
+    const durationMinutes: 10 | 15 | 20 =
+      rawDuration === 10 || rawDuration === 20 ? rawDuration : 15;
+    const rawSteps = Number(obj.completedSteps);
+    const completedSteps = Number.isFinite(rawSteps)
+      ? Math.max(0, Math.min(5, Math.round(rawSteps)))
+      : 0;
+    const updatedAt =
+      typeof obj.updatedAt === 'string' && obj.updatedAt.trim()
+        ? obj.updatedAt
+        : typeof obj.savedAtIso === 'string' && obj.savedAtIso.trim()
+          ? obj.savedAtIso
+          : new Date().toISOString();
+    const id =
+      typeof obj.id === 'string' && obj.id.trim()
+        ? obj.id.trim().slice(0, 128)
+        : `outline_${result.length}_${Date.now()}`;
+
+    result.push({
+      id,
+      topicTitle,
+      updatedAt,
+      durationMinutes,
+      completedSteps,
+      draft: sanitizeSavedOutlineDraft(obj.draft, topicTitle)
+    });
+  }
+  return result;
 }
 
 function buildCleanQuestionPayload(q: Question, includeCreatedAt = false): Record<string, unknown> {
@@ -326,6 +411,118 @@ export async function syncLegalActsWithCache(
   }
 }
 
+/**
+ * Synchronizuje kolekcję examTopics używając tego samego licznika dbVersion
+ * z system/metadata oraz lokalnego cache IndexedDB (wyłącznie dla zalogowanych).
+ */
+export async function syncExamTopicsWithCache(
+  metadata: SystemMetadata,
+  forceServerFetch = false
+): Promise<{ examTopics: ExamTopic[]; syncedFromServer: boolean }> {
+  const localVersion = getLocalExamTopicsDbVersion();
+  const cachedTopics = await getCachedExamTopics();
+
+  const needsSync =
+    forceServerFetch ||
+    localVersion < 0 ||
+    metadata.dbVersion > localVersion;
+
+  if (!needsSync) {
+    return {
+      examTopics: cachedTopics.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl')),
+      syncedFromServer: false
+    };
+  }
+
+  try {
+    const snapshot = await getDocs(collection(db, 'examTopics'));
+    const freshTopics: ExamTopic[] = snapshot.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: String(data.id ?? d.id),
+        category: String(data.category ?? 'Przepisy ruchu drogowego'),
+        title: String(data.title ?? ''),
+        commissionTips: String(data.commissionTips ?? ''),
+        sampleOutline: String(data.sampleOutline ?? ''),
+        order: typeof data.order === 'number' ? data.order : 1,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    });
+
+    freshTopics.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl'));
+
+    await saveExamTopicsToCache(freshTopics);
+    setLocalExamTopicsDbVersion(metadata.dbVersion);
+
+    return {
+      examTopics: freshTopics,
+      syncedFromServer: true
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'examTopics');
+  }
+}
+
+/**
+ * Synchronizuje kolekcję glossaryTerms używając tego samego licznika dbVersion
+ * z system/metadata oraz lokalnego cache IndexedDB (wyłącznie dla zalogowanych).
+ */
+export async function syncGlossaryTermsWithCache(
+  metadata: SystemMetadata,
+  forceServerFetch = false
+): Promise<{ glossaryTerms: GlossaryTerm[]; syncedFromServer: boolean }> {
+  const localVersion = getLocalGlossaryTermsDbVersion();
+  const cachedTerms = await getCachedGlossaryTerms();
+
+  const needsSync =
+    forceServerFetch ||
+    localVersion < 0 ||
+    metadata.dbVersion > localVersion;
+
+  if (!needsSync) {
+    return {
+      glossaryTerms: cachedTerms.sort(
+        (a, b) => a.order - b.order || a.term.localeCompare(b.term, 'pl')
+      ),
+      syncedFromServer: false
+    };
+  }
+
+  try {
+    const snapshot = await getDocs(collection(db, 'glossaryTerms'));
+    const freshTerms: GlossaryTerm[] = snapshot.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: String(data.id ?? d.id),
+        category: String(data.category ?? 'Dydaktyka'),
+        term: String(data.term ?? ''),
+        definition: String(data.definition ?? ''),
+        example: String(data.example ?? ''),
+        order: typeof data.order === 'number' ? data.order : 1,
+        examTip:
+          typeof data.examTip === 'string' && data.examTip.trim().length > 0
+            ? data.examTip.trim()
+            : undefined,
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      };
+    });
+
+    freshTerms.sort((a, b) => a.order - b.order || a.term.localeCompare(b.term, 'pl'));
+
+    await saveGlossaryTermsToCache(freshTerms);
+    setLocalGlossaryTermsDbVersion(metadata.dbVersion);
+
+    return {
+      glossaryTerms: freshTerms,
+      syncedFromServer: true
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'glossaryTerms');
+  }
+}
+
 async function bumpDatabaseVersion(
   nextCategories?: string[],
   knownCurrentVersion?: number,
@@ -399,6 +596,7 @@ export async function loadOrCreateUserProgress(
           data.privateNotes && typeof data.privateNotes === 'object'
             ? (data.privateNotes as Record<string, string>)
             : {},
+        savedOutlines: sanitizeSavedOutlines(data.savedOutlines),
         totalAnswered: typeof data.totalAnswered === 'number' ? data.totalAnswered : 0,
         totalCorrect: typeof data.totalCorrect === 'number' ? data.totalCorrect : 0,
         points: typeof data.points === 'number' ? data.points : 0,
@@ -426,6 +624,7 @@ export async function loadOrCreateUserProgress(
       mistakeStreaks: {},
       askLecturerIds: [],
       privateNotes: {},
+      savedOutlines: [],
       totalAnswered: 0,
       totalCorrect: 0,
       points: 0,
@@ -511,6 +710,7 @@ async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> 
         mistakeStreaks: progress.mistakeStreaks,
         askLecturerIds: progress.askLecturerIds.slice(0, 5000),
         privateNotes: progress.privateNotes,
+        savedOutlines: sanitizeSavedOutlines(progress.savedOutlines),
         totalAnswered: progress.totalAnswered,
         totalCorrect: progress.totalCorrect,
         points: progress.points,
@@ -652,6 +852,18 @@ export async function toggleLessonCompleted(
   return updated;
 }
 
+export async function saveUserOutlines(
+  current: UserProgress,
+  nextOutlines: SavedOutlineEntry[]
+): Promise<UserProgress> {
+  const updated: UserProgress = {
+    ...current,
+    savedOutlines: sanitizeSavedOutlines(nextOutlines)
+  };
+  await persistUserAndLeaderboard(updated);
+  return updated;
+}
+
 export async function saveExamCompletion(
   current: UserProgress,
   examItem: ExamHistoryItem,
@@ -689,34 +901,45 @@ export async function saveExamCompletion(
 }
 
 /**
- * Zwiększa w tle globalny licznik błędnych odpowiedzi (wrongCount) na pytaniach w Firestore
- * za pomocą atomowego increment(1). Celowo NIE podbija dbVersion ani nie aktualizuje updatedAt,
- * aby nie generować dodatkowych odczytów całej kolekcji u innych kursantów.
+ * Zwiększa w tle zbiorczy licznik błędnych odpowiedzi w jednym lekkim dokumencie system/stats
+ * (mapa wrongCounts: { [questionId]: number }), całkowicie niezależnie od cache IndexedDB dla pytań.
  */
 export async function incrementQuestionsWrongCount(questionIds: string[]): Promise<void> {
   const uniqueIds = Array.from(new Set(questionIds.filter(Boolean)));
   if (uniqueIds.length === 0) return;
 
-  try {
-    if (uniqueIds.length === 1) {
-      await updateDoc(doc(db, 'questions', uniqueIds[0]), {
-        wrongCount: increment(1)
-      });
-      return;
-    }
+  const wrongCountsPatch: Record<string, ReturnType<typeof increment>> = {};
+  for (const qId of uniqueIds) {
+    wrongCountsPatch[qId] = increment(1);
+  }
 
-    for (let i = 0; i < uniqueIds.length; i += FIRESTORE_BATCH_LIMIT) {
-      const chunk = uniqueIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
-      const batch = writeBatch(db);
-      for (const qId of chunk) {
-        batch.update(doc(db, 'questions', qId), {
-          wrongCount: increment(1)
-        });
-      }
-      await batch.commit();
-    }
+  try {
+    await setDoc(STATS_DOC_REF, { wrongCounts: wrongCountsPatch }, { merge: true });
   } catch (error) {
-    console.warn('Nie udało się zaktualizować statystyki błędów grupy w tle:', error);
+    console.warn('Nie udało się zaktualizować statystyki błędów grupy w system/stats:', error);
+  }
+}
+
+/**
+ * Pobiera jednorazowo dokument system/stats (1 lekki odczyt) z mapą wrongCounts.
+ */
+export async function fetchSystemWrongCounts(): Promise<Record<string, number>> {
+  try {
+    const snap = await getDoc(STATS_DOC_REF);
+    if (!snap.exists()) return {};
+    const data = snap.data();
+    const rawMap = data?.wrongCounts;
+    if (!rawMap || typeof rawMap !== 'object') return {};
+
+    const result: Record<string, number> = {};
+    for (const [qId, count] of Object.entries(rawMap as Record<string, unknown>)) {
+      if (typeof count === 'number' && Number.isFinite(count) && count > 0) {
+        result[qId] = count;
+      }
+    }
+    return result;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, 'system/stats');
   }
 }
 
@@ -1336,6 +1559,178 @@ export async function deleteAdminLegalAct(actId: string): Promise<number> {
     await deleteDoc(doc(db, 'legalActs', actId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `legalActs/${actId}`);
+  }
+  return await bumpDatabaseVersion();
+}
+
+// --- TEMATY I WZORCOWE KONSPEKTY EGZAMINACYJNE (kolekcja examTopics) ---
+
+export function generateExamTopicId(index = 0): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `topic_${Date.now()}_${index}_${rand}`;
+}
+
+function buildExamTopicPayload(topic: ExamTopic, isNew: boolean): Record<string, unknown> {
+  const cleanTitle = topic.title.trim().slice(0, 400);
+  const cleanCategory = (topic.category.trim() || 'Przepisy ruchu drogowego').slice(0, 120);
+  if (!cleanTitle) {
+    throw new Error('Podaj tytuł tematu egzaminacyjnego.');
+  }
+
+  const payload: Record<string, unknown> = {
+    id: topic.id,
+    category: cleanCategory,
+    title: cleanTitle,
+    commissionTips: topic.commissionTips.trim().slice(0, 2000),
+    sampleOutline: topic.sampleOutline.trim().slice(0, 50000),
+    order: Number.isFinite(Number(topic.order))
+      ? Math.max(0, Math.min(10000, Math.round(Number(topic.order))))
+      : 1,
+    updatedAt: serverTimestamp()
+  };
+
+  if (isNew) {
+    payload.createdAt = serverTimestamp();
+  } else if (topic.createdAt) {
+    payload.createdAt = topic.createdAt;
+  }
+
+  return payload;
+}
+
+export async function saveAdminExamTopic(
+  topic: ExamTopic,
+  isNew: boolean
+): Promise<number> {
+  const payload = buildExamTopicPayload(topic, isNew);
+  const ref = doc(db, 'examTopics', topic.id);
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `examTopics/${topic.id}`);
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+export async function batchImportExamTopics(topics: ExamTopic[]): Promise<number> {
+  if (topics.length === 0) {
+    throw new Error('Brak tematów do zapisania.');
+  }
+
+  try {
+    for (let i = 0; i < topics.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = topics.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const topic of chunk) {
+        const ref = doc(db, 'examTopics', topic.id);
+        batch.set(ref, buildExamTopicPayload(topic, !topic.createdAt));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'examTopics');
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+export async function deleteAdminExamTopic(topicId: string): Promise<number> {
+  try {
+    await deleteDoc(doc(db, 'examTopics', topicId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `examTopics/${topicId}`);
+  }
+  return await bumpDatabaseVersion();
+}
+
+// --- SŁOWNIK DYDAKTYKI I PSYCHOLOGII / FISZKI (kolekcja glossaryTerms) ---
+
+export function generateGlossaryTermId(index = 0): string {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `term_${Date.now()}_${index}_${rand}`;
+}
+
+function buildGlossaryTermPayload(term: GlossaryTerm, isNew: boolean): Record<string, unknown> {
+  const cleanTerm = term.term.trim().slice(0, 250);
+  const cleanDefinition = term.definition.trim().slice(0, 5000);
+  const cleanCategory = (term.category.trim() || 'Dydaktyka').slice(0, 120);
+  if (!cleanTerm) {
+    throw new Error('Podaj nazwę pojęcia (hasła).');
+  }
+  if (!cleanDefinition) {
+    throw new Error('Podaj definicję egzaminacyjną pojęcia.');
+  }
+
+  const payload: Record<string, unknown> = {
+    id: term.id,
+    category: cleanCategory,
+    term: cleanTerm,
+    definition: cleanDefinition,
+    example: term.example.trim().slice(0, 5000),
+    order: Number.isFinite(Number(term.order))
+      ? Math.max(0, Math.min(10000, Math.round(Number(term.order))))
+      : 1,
+    updatedAt: serverTimestamp()
+  };
+
+  if (term.examTip && term.examTip.trim()) {
+    payload.examTip = term.examTip.trim().slice(0, 2000);
+  }
+
+  if (isNew) {
+    payload.createdAt = serverTimestamp();
+  } else if (term.createdAt) {
+    payload.createdAt = term.createdAt;
+  }
+
+  return payload;
+}
+
+export async function saveAdminGlossaryTerm(
+  term: GlossaryTerm,
+  isNew: boolean
+): Promise<number> {
+  const payload = buildGlossaryTermPayload(term, isNew);
+  const ref = doc(db, 'glossaryTerms', term.id);
+
+  try {
+    await setDoc(ref, payload);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `glossaryTerms/${term.id}`);
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+export async function batchImportGlossaryTerms(terms: GlossaryTerm[]): Promise<number> {
+  if (terms.length === 0) {
+    throw new Error('Brak fiszek do zapisania.');
+  }
+
+  try {
+    for (let i = 0; i < terms.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = terms.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const term of chunk) {
+        const ref = doc(db, 'glossaryTerms', term.id);
+        batch.set(ref, buildGlossaryTermPayload(term, !term.createdAt));
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'glossaryTerms');
+  }
+
+  return await bumpDatabaseVersion();
+}
+
+export async function deleteAdminGlossaryTerm(termId: string): Promise<number> {
+  try {
+    await deleteDoc(doc(db, 'glossaryTerms', termId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `glossaryTerms/${termId}`);
   }
   return await bumpDatabaseVersion();
 }

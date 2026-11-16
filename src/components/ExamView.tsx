@@ -3,9 +3,11 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   Clock,
   Flag,
   Play,
+  Presentation,
   RotateCcw,
   XCircle,
   Zap
@@ -25,12 +27,24 @@ import {
   matchesLicenseCategory
 } from '../lib/questionUtils';
 import { incrementQuestionsWrongCount, saveExamCompletion } from '../services/firestoreService';
-import { ExamHistoryItem, LicenseCategoryFilter, Question, UserProgress } from '../types';
+import {
+  ExamHistoryItem,
+  ExamTopic,
+  LicenseCategoryFilter,
+  Question,
+  UserProgress
+} from '../types';
+import { LectureSimulatorSection } from './LectureSimulatorSection';
 import { LicenseCategorySwitcher } from './LicenseCategorySwitcher';
 import { ReportModal } from './ReportModal';
 
 interface ExamViewProps {
   mode: 'exam' | 'quick10';
+  examTopics: ExamTopic[];
+  examInitialPart?: 'hub' | 'part1' | 'part2';
+  examEntryNonce?: number;
+  preselectedTopicId?: string | null;
+  onPreselectedTopicConsumed?: () => void;
   questions: Question[];
   categories: string[];
   defaultCategory: string;
@@ -64,6 +78,11 @@ function pickRandomQuestions(pool: Question[], count: number): Question[] {
 
 export function ExamView({
   mode,
+  examTopics,
+  examInitialPart = 'hub',
+  examEntryNonce = 0,
+  preselectedTopicId,
+  onPreselectedTopicConsumed,
   questions,
   categories,
   defaultCategory,
@@ -76,6 +95,9 @@ export function ExamView({
   onQuestionsWrong,
   onBackToDashboard
 }: ExamViewProps) {
+  const [examPart, setExamPart] = useState<'hub' | 'part1' | 'part2'>(() =>
+    mode === 'quick10' ? 'part1' : preselectedTopicId ? 'part2' : examInitialPart
+  );
   const [stage, setStage] = useState<'setup' | 'running' | 'results'>(
     mode === 'quick10' ? 'running' : 'setup'
   );
@@ -125,14 +147,20 @@ export function ExamView({
     [licenseFilteredQuestions]
   );
 
-  // Automatyczny start w trybie Szybka 10-tka
+  // Automatyczny start w trybie Szybka 10-tka oraz synchronizacja wejścia do Egzaminu
   useEffect(() => {
     if (mode === 'quick10') {
+      setExamPart('part1');
       startTest('quick10', defaultCategory || ALL_CATEGORIES_KEY, QUICK10_QUESTION_COUNT);
     } else {
       setStage('setup');
+      if (preselectedTopicId) {
+        setExamPart('part2');
+      } else {
+        setExamPart(examInitialPart);
+      }
     }
-  }, [mode, defaultCategory, startTest]);
+  }, [mode, defaultCategory, startTest, examInitialPart, examEntryNonce, preselectedTopicId]);
 
   const finishExam = useCallback(async () => {
     if (stage !== 'running') return;
@@ -225,7 +253,152 @@ export function ExamView({
     });
   }
 
-  // Ekran konfiguracji Symulacji Egzaminu
+  // Ekran wyboru części egzaminu (Część I vs Część II)
+  if (mode === 'exam' && examPart === 'hub') {
+    return (
+      <div className="mx-auto max-w-4xl space-y-6">
+        <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end dark:border-slate-800">
+          <div>
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
+              Egzamin Państwowy na Instruktora Nauki Jazdy
+            </p>
+            <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">
+              Wybierz część egzaminu
+            </h1>
+          </div>
+
+          <button
+            type="button"
+            onClick={onBackToDashboard}
+            className="flex h-10 shrink-0 cursor-pointer items-center gap-2 self-start rounded-lg border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 whitespace-nowrap hover:bg-slate-100 sm:self-auto dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            <span>Wróć na pulpit</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+          {/* Karta Części I: Test Teoretyczny */}
+          <button
+            type="button"
+            onClick={() => {
+              setStage('setup');
+              setExamPart('part1');
+            }}
+            className="flex cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-6 text-left transition-colors hover:border-blue-500 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-blue-500"
+          >
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-900/60 dark:bg-blue-950/50 dark:text-blue-400">
+                  <ClipboardCheck className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <span className="font-mono text-xs font-semibold text-slate-500 tabular-nums dark:text-slate-400">
+                  25 min · ≥{EXAM_PASS_THRESHOLD_PERCENT}%
+                </span>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-blue-700 dark:text-blue-400">Część I</p>
+                <h2 className="font-display mt-1 text-xl font-bold text-slate-900 dark:text-white">
+                  Egzamin Teoretyczny (Test)
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                  Symulacja państwowego testu wielokrotnego wyboru (20 lub 32 pytania) bez podpowiedzi, z limitem czasu 25 minut i przeglądem błędów po zakończeniu.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-4 text-sm font-semibold text-blue-700 dark:border-slate-800 dark:text-blue-400">
+              <span>Konfiguruj i uruchom test</span>
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </div>
+          </button>
+
+          {/* Karta Części II: Pokaz Przeprowadzenia Zajęć */}
+          <button
+            type="button"
+            onClick={() => setExamPart('part2')}
+            className="flex cursor-pointer flex-col justify-between rounded-xl border border-slate-200 bg-white p-6 text-left transition-colors hover:border-emerald-500 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-emerald-500"
+          >
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/50 dark:text-emerald-400">
+                  <Presentation className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <span className="font-mono text-xs font-semibold text-slate-500 tabular-nums dark:text-slate-400">
+                  {examTopics.length} tematów · 10 / 15 / 20 min
+                </span>
+              </div>
+
+              <div>
+                <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                  Część II
+                </p>
+                <h2 className="font-display mt-1 text-xl font-bold text-slate-900 dark:text-white">
+                  Pokaz Przeprowadzenia Zajęć (Konspekt i Timer)
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                  Wylosuj temat z bazy egzaminacyjnej, napisz własny konspekt z pamięci na pustej checkliście, przećwicz wystąpienie ze stoperem i porównaj je z ukrytym wzorem.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-4 text-sm font-semibold text-emerald-700 dark:border-emerald-800 dark:text-emerald-400">
+              <span>Otwórz symulator pokazu</span>
+              <ArrowRight className="h-4 w-4" aria-hidden="true" />
+            </div>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Część II: Pokaz Przeprowadzenia Zajęć (Konspekt i Timer)
+  if (mode === 'exam' && examPart === 'part2') {
+    return (
+      <div className="space-y-6">
+        <div className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end dark:border-slate-800">
+          <div>
+            <p className="text-xs font-medium text-emerald-700 dark:text-emerald-400">
+              Egzamin Państwowy · Część II
+            </p>
+            <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">
+              Pokaz Przeprowadzenia Zajęć (Konspekt i Timer)
+            </h1>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExamPart('hub')}
+              className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Wybór części egzaminu</span>
+            </button>
+            <button
+              type="button"
+              onClick={onBackToDashboard}
+              className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <span>Pulpit</span>
+            </button>
+          </div>
+        </div>
+
+        <LectureSimulatorSection
+          examTopics={examTopics}
+          preselectedTopicId={preselectedTopicId}
+          onPreselectedTopicConsumed={onPreselectedTopicConsumed}
+          progress={progress}
+          isGuest={isGuest}
+          onProgressChange={onProgressChange}
+        />
+      </div>
+    );
+  }
+
+  // Ekran konfiguracji Symulacji Egzaminu (Część I)
   if (stage === 'setup') {
     const availableCount =
       chosenCategory === ALL_CATEGORIES_KEY
@@ -234,17 +407,26 @@ export function ExamView({
 
     return (
       <div className="mx-auto max-w-2xl space-y-6">
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBackToDashboard}
-            className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-            <span>Pulpit</span>
-          </button>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExamPart('hub')}
+              className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Wybór części egzaminu</span>
+            </button>
+            <button
+              type="button"
+              onClick={onBackToDashboard}
+              className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <span>Pulpit</span>
+            </button>
+          </div>
           <h1 className="font-display text-2xl font-bold text-slate-900 dark:text-white">
-            Symulacja Egzaminu
+            Część I: Symulacja Egzaminu
           </h1>
         </div>
 

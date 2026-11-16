@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  BookOpenCheck,
   Brain,
   CheckCircle2,
   ChevronRight,
@@ -10,7 +11,6 @@ import {
   Headphones,
   Lightbulb,
   Lock,
-  Presentation,
   Scale,
   Search,
   ShieldCheck,
@@ -18,15 +18,17 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { toggleLessonCompleted } from '../services/firestoreService';
-import { Lesson, UserProgress } from '../types';
+import { ExamTopic, GlossaryTerm, Lesson, UserProgress } from '../types';
 import { GlossaryFlashcardsSection } from './GlossaryFlashcardsSection';
-import { LectureSimulatorSection } from './LectureSimulatorSection';
 import { MarkdownContent } from './MarkdownContent';
+import { SampleOutlinesSection } from './SampleOutlinesSection';
 
-type KnowledgeTab = 'lessons' | 'lecture-sim' | 'glossary';
+type KnowledgeTab = 'lessons' | 'outlines' | 'glossary';
 
 interface KnowledgeBaseViewProps {
   lessons: Lesson[];
+  examTopics: ExamTopic[];
+  glossaryTerms: GlossaryTerm[];
   categories: string[];
   notebookLmUrl?: string;
   progress: UserProgress;
@@ -35,12 +37,15 @@ interface KnowledgeBaseViewProps {
   isAdmin: boolean;
   onRequireAuth: (mode: 'login' | 'register') => void;
   onPracticeCategory: (category: string) => void;
+  onPracticeTopicInExam: (topicId: string) => void;
   onOpenAdminMaterials: () => void;
   onBackToDashboard: () => void;
 }
 
 export function KnowledgeBaseView({
   lessons,
+  examTopics,
+  glossaryTerms,
   categories,
   notebookLmUrl,
   progress,
@@ -49,6 +54,7 @@ export function KnowledgeBaseView({
   isAdmin,
   onRequireAuth,
   onPracticeCategory,
+  onPracticeTopicInExam,
   onOpenAdminMaterials,
   onBackToDashboard
 }: KnowledgeBaseViewProps) {
@@ -375,16 +381,16 @@ export function KnowledgeBaseView({
         <button
           type="button"
           role="tab"
-          aria-selected={activeTab === 'lecture-sim'}
-          onClick={() => setActiveTab('lecture-sim')}
+          aria-selected={activeTab === 'outlines'}
+          onClick={() => setActiveTab('outlines')}
           className={`flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg px-4 text-xs font-semibold whitespace-nowrap transition-colors sm:flex-none sm:text-sm ${
-            activeTab === 'lecture-sim'
+            activeTab === 'outlines'
               ? 'bg-blue-700 text-white dark:bg-blue-600'
               : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
           }`}
         >
-          <Presentation className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>Pokaz Wykładu (Konspekty i Timer)</span>
+          <BookOpenCheck className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Gotowe Konspekty (Wzory)</span>
         </button>
 
         <button
@@ -403,10 +409,13 @@ export function KnowledgeBaseView({
         </button>
       </div>
 
-      {activeTab === 'lecture-sim' ? (
-        <LectureSimulatorSection />
+      {activeTab === 'outlines' ? (
+        <SampleOutlinesSection
+          examTopics={examTopics}
+          onPracticeTopicInExam={onPracticeTopicInExam}
+        />
       ) : activeTab === 'glossary' ? (
-        <GlossaryFlashcardsSection />
+        <GlossaryFlashcardsSection glossaryTerms={glossaryTerms} />
       ) : isGuest ? (
         <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
           <Lock className="mx-auto h-9 w-9 text-blue-700 dark:text-blue-400" aria-hidden="true" />
@@ -414,7 +423,7 @@ export function KnowledgeBaseView({
             Rozdziały z ustaw dostępne po zalogowaniu
           </h2>
           <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-            Rozdziały z ustaw oraz dostęp do Wirtualnego Wykładowcy (NotebookLM) wymagają bezpłatnego konta kursanta. W międzyczasie możesz swobodnie korzystać z zakładek „Pokaz Wykładu” oraz „Słownik Dydaktyki i Psychologii (Fiszki)” powyżej.
+            Rozdziały z ustaw oraz dostęp do Wirtualnego Wykładowcy (NotebookLM) wymagają bezpłatnego konta kursanta. W międzyczasie możesz swobodnie korzystać z zakładek „Gotowe Konspekty (Wzory)” oraz „Słownik Dydaktyki i Psychologii (Fiszki)” powyżej.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <button

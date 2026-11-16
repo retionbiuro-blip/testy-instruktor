@@ -46,6 +46,12 @@ service cloud.firestore {
         (!('notebookLmUrl' in data) || data.notebookLmUrl == null || (data.notebookLmUrl is string && data.notebookLmUrl.size() <= 1000));
     }
 
+    function isValidSystemStats(data) {
+      return data.keys().hasAll(['wrongCounts']) &&
+        data.keys().hasOnly(['wrongCounts']) &&
+        data.wrongCounts is map;
+    }
+
     function isValidLesson(data) {
       return data.keys().hasAll(['id', 'category', 'title', 'order', 'legalBasis', 'content', 'keyTakeaways']) &&
         data.keys().hasOnly(['id', 'category', 'title', 'order', 'legalBasis', 'content', 'keyTakeaways', 'createdAt', 'updatedAt']) &&
@@ -67,6 +73,29 @@ service cloud.firestore {
         data.description is string && data.description.size() <= 600 &&
         data.url is string && data.url.size() >= 1 && data.url.size() <= 1500 &&
         data.order is number && data.order >= 0 && data.order <= 10000;
+    }
+
+    function isValidExamTopic(data) {
+      return data.keys().hasAll(['id', 'category', 'title', 'commissionTips', 'sampleOutline', 'order']) &&
+        data.keys().hasOnly(['id', 'category', 'title', 'commissionTips', 'sampleOutline', 'order', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 120 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 400 &&
+        data.commissionTips is string && data.commissionTips.size() <= 2000 &&
+        data.sampleOutline is string && data.sampleOutline.size() <= 50000 &&
+        data.order is number && data.order >= 0 && data.order <= 10000;
+    }
+
+    function isValidGlossaryTerm(data) {
+      return data.keys().hasAll(['id', 'category', 'term', 'definition', 'example', 'order']) &&
+        data.keys().hasOnly(['id', 'category', 'term', 'definition', 'example', 'order', 'examTip', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 120 &&
+        data.term is string && data.term.size() >= 1 && data.term.size() <= 250 &&
+        data.definition is string && data.definition.size() >= 1 && data.definition.size() <= 5000 &&
+        data.example is string && data.example.size() <= 5000 &&
+        data.order is number && data.order >= 0 && data.order <= 10000 &&
+        (!('examTip' in data) || (data.examTip is string && data.examTip.size() <= 2000));
     }
 
     function isValidQuestion(data) {
@@ -116,7 +145,7 @@ service cloud.firestore {
 
     function isValidUserProgress(data, userId) {
       return data.keys().hasAll(['uid', 'nick', 'email', 'masteredIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays']) &&
-        data.keys().hasOnly(['uid', 'nick', 'email', 'masteredIds', 'completedLessonIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays', 'lastStudyDate', 'examHistory', 'unreadNotifications', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'nick', 'email', 'masteredIds', 'completedLessonIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'savedOutlines', 'totalAnswered', 'totalCorrect', 'points', 'streakDays', 'lastStudyDate', 'examHistory', 'unreadNotifications', 'updatedAt']) &&
         data.uid == userId &&
         data.nick is string && data.nick.size() >= 2 && data.nick.size() <= 60 &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
@@ -125,6 +154,7 @@ service cloud.firestore {
         data.mistakeStreaks is map &&
         data.askLecturerIds is list && data.askLecturerIds.size() <= 5000 &&
         data.privateNotes is map &&
+        (!('savedOutlines' in data) || (data.savedOutlines is list && data.savedOutlines.size() <= 50)) &&
         data.totalAnswered is number && data.totalAnswered >= 0 &&
         data.totalCorrect is number && data.totalCorrect >= 0 &&
         data.points is number && data.points >= 0 &&
@@ -152,6 +182,16 @@ service cloud.firestore {
       allow get: if true;
       allow create, update: if isAdmin() && isValidSystemMetadata(incoming());
       allow delete: if false;
+    }
+
+    // 1b. Zbiorcze statystyki błędnych odpowiedzi grupy (1 lekki dokument niezależny od cache pytań)
+    match /system/stats {
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && isValidSystemStats(incoming());
+      allow update: if isSignedIn() &&
+        isValidSystemStats(incoming()) &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['wrongCounts']);
+      allow delete: if isAdmin();
     }
 
     function isValidWrongCountIncrement() {
@@ -192,6 +232,24 @@ service cloud.firestore {
       allow create: if isAdmin() && isValidId(actId) && isValidLegalAct(incoming()) && incoming().id == actId;
       allow update: if isAdmin() && isValidId(actId) && isValidLegalAct(incoming()) && incoming().id == actId;
       allow delete: if isAdmin() && isValidId(actId);
+    }
+
+    // 2d. Tematy i wzorcowe konspekty egzaminacyjne (odczyt dla zalogowanych, edycja wyłącznie przez admina)
+    match /examTopics/{topicId} {
+      allow get: if isSignedIn() && isValidId(topicId);
+      allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(topicId) && isValidExamTopic(incoming()) && incoming().id == topicId;
+      allow update: if isAdmin() && isValidId(topicId) && isValidExamTopic(incoming()) && incoming().id == topicId;
+      allow delete: if isAdmin() && isValidId(topicId);
+    }
+
+    // 2e. Słownik Dydaktyki i Psychologii / Fiszki (odczyt dla zalogowanych, edycja wyłącznie przez admina)
+    match /glossaryTerms/{termId} {
+      allow get: if isSignedIn() && isValidId(termId);
+      allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(termId) && isValidGlossaryTerm(incoming()) && incoming().id == termId;
+      allow update: if isAdmin() && isValidId(termId) && isValidGlossaryTerm(incoming()) && incoming().id == termId;
+      allow delete: if isAdmin() && isValidId(termId);
     }
 
     // 3. Wspólne komentarze kursantów pod pytaniami (odczyt także dla gościa, zapis tylko zalogowani)
@@ -247,7 +305,7 @@ service cloud.firestore {
             incoming().email == existing().email &&
             incoming().diff(existing()).affectedKeys().hasOnly([
               'nick', 'masteredIds', 'completedLessonIds', 'mistakeStreaks',
-              'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect',
+              'askLecturerIds', 'privateNotes', 'savedOutlines', 'totalAnswered', 'totalCorrect',
               'points', 'streakDays', 'lastStudyDate', 'examHistory',
               'unreadNotifications', 'updatedAt'
             ])

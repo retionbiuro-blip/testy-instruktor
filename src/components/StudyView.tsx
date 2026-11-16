@@ -59,6 +59,7 @@ interface StudyViewProps {
   onFocusQuestionConsumed?: () => void;
   customQueue?: { title: string; questionIds: string[] } | null;
   onClearCustomQueue?: () => void;
+  groupWrongCounts?: Record<string, number>;
   onQuestionsWrong?: (questionIds: string[]) => void;
   progress: UserProgress;
   onProgressChange: (next: UserProgress) => void;
@@ -82,6 +83,7 @@ export function StudyView({
   onFocusQuestionConsumed,
   customQueue,
   onClearCustomQueue,
+  groupWrongCounts,
   onQuestionsWrong,
   progress,
   onProgressChange,
@@ -634,11 +636,11 @@ export function StudyView({
                   <span>
                     Wielokrotny wybór (poprawnych: {activeQuestion.correctAnswers.length})
                   </span>
-                  {(activeQuestion.wrongCount ?? 0) > 0 && (
+                  {(groupWrongCounts?.[activeQuestion.id] ?? 0) > 0 && (
                     <>
                       <span aria-hidden="true">·</span>
                       <span className="font-mono text-amber-700 tabular-nums dark:text-amber-400">
-                        Błędów w grupie: {activeQuestion.wrongCount}
+                        Błędów w grupie: {groupWrongCounts?.[activeQuestion.id] ?? 0}
                       </span>
                     </>
                   )}

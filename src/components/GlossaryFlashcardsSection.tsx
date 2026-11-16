@@ -9,84 +9,122 @@ import {
   Shuffle,
   X
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { DIDACTICS_GLOSSARY, GlossaryDomain, GlossaryTerm } from '../data/knowledgePracticeData';
+import { useEffect, useMemo, useState } from 'react';
+import { GlossaryTerm } from '../types';
 
 type GlossaryViewMode = 'list' | 'flashcards';
-type DomainFilter = 'ALL' | GlossaryDomain;
 
-export function GlossaryFlashcardsSection() {
+interface GlossaryFlashcardsSectionProps {
+  glossaryTerms: GlossaryTerm[];
+}
+
+const DEFAULT_GLOSSARY_CATEGORIES = ['Dydaktyka', 'Metodyka', 'Psychologia'];
+
+export function GlossaryFlashcardsSection({ glossaryTerms }: GlossaryFlashcardsSectionProps) {
   const [viewMode, setViewMode] = useState<GlossaryViewMode>('list');
-  const [domainFilter, setDomainFilter] = useState<DomainFilter>('ALL');
+  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Stan trybu fiszek
-  const [deckOrder, setDeckOrder] = useState<string[]>(() => DIDACTICS_GLOSSARY.map((t) => t.id));
+  const sortedTerms = useMemo(() => {
+    return [...glossaryTerms].sort(
+      (a, b) => a.order - b.order || a.term.localeCompare(b.term, 'pl')
+    );
+  }, [glossaryTerms]);
+
+  // Stan trybu fiszek — synchronizowany z aktualną listą fiszek (np. po dodaniu/edycji w Adminie)
+  const [deckOrder, setDeckOrder] = useState<string[]>(() => sortedTerms.map((t) => t.id));
   const [cardIndex, setCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
   const [reviewedIds, setReviewedIds] = useState<string[]>([]);
 
+  useEffect(() => {
+    const validIds = new Set(sortedTerms.map((t) => t.id));
+    setDeckOrder((prev) => {
+      const kept = prev.filter((id) => validIds.has(id));
+      const keptSet = new Set(kept);
+      const added = sortedTerms.map((t) => t.id).filter((id) => !keptSet.has(id));
+      const next = [...kept, ...added];
+      if (next.length === prev.length && next.every((id, idx) => id === prev[idx])) {
+        return prev;
+      }
+      return next;
+    });
+  }, [sortedTerms]);
+
   const termsById = useMemo(() => {
     const map = new Map<string, GlossaryTerm>();
-    for (const item of DIDACTICS_GLOSSARY) {
+    for (const item of sortedTerms) {
       map.set(item.id, item);
     }
     return map;
-  }, []);
+  }, [sortedTerms]);
 
-  const domainCounts = useMemo(() => {
-    return {
-      ALL: DIDACTICS_GLOSSARY.length,
-      Dydaktyka: DIDACTICS_GLOSSARY.filter((t) => t.domain === 'Dydaktyka').length,
-      Metodyka: DIDACTICS_GLOSSARY.filter((t) => t.domain === 'Metodyka').length,
-      Psychologia: DIDACTICS_GLOSSARY.filter((t) => t.domain === 'Psychologia').length
-    };
-  }, []);
+  const categoryTabs = useMemo(() => {
+    const known = new Set<string>(DEFAULT_GLOSSARY_CATEGORIES);
+    for (const item of sortedTerms) {
+      if (item.category.trim()) {
+        known.add(item.category.trim());
+      }
+    }
+    const orderedCategories = Array.from(known).filter(
+      (cat) =>
+        DEFAULT_GLOSSARY_CATEGORIES.includes(cat) ||
+        sortedTerms.some((t) => t.category.trim() === cat)
+    );
+    return [
+      { id: 'ALL', label: `Wszystkie (${sortedTerms.length})` },
+      ...orderedCategories.map((cat) => ({
+        id: cat,
+        label: `${cat} (${sortedTerms.filter((t) => t.category.trim() === cat).length})`
+      }))
+    ];
+  }, [sortedTerms]);
 
   const filteredList = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return DIDACTICS_GLOSSARY.filter((item) => {
-      if (domainFilter !== 'ALL' && item.domain !== domainFilter) {
+    return sortedTerms.filter((item) => {
+      if (categoryFilter !== 'ALL' && item.category.trim() !== categoryFilter) {
         return false;
       }
       if (!q) return true;
       return (
         item.term.toLowerCase().includes(q) ||
         item.definition.toLowerCase().includes(q) ||
-        item.drivingExample.toLowerCase().includes(q) ||
-        item.domain.toLowerCase().includes(q)
+        item.example.toLowerCase().includes(q) ||
+        item.category.toLowerCase().includes(q) ||
+        (item.examTip ?? '').toLowerCase().includes(q)
       );
     });
-  }, [domainFilter, searchQuery]);
+  }, [sortedTerms, categoryFilter, searchQuery]);
 
   const activeDeck = useMemo(() => {
     const ordered = deckOrder
       .map((id) => termsById.get(id))
       .filter((item): item is GlossaryTerm => Boolean(item));
-    return domainFilter === 'ALL'
+    return categoryFilter === 'ALL'
       ? ordered
-      : ordered.filter((item) => item.domain === domainFilter);
-  }, [deckOrder, termsById, domainFilter]);
+      : ordered.filter((item) => item.category.trim() === categoryFilter);
+  }, [deckOrder, termsById, categoryFilter]);
 
   const safeCardIndex = activeDeck.length > 0 ? Math.min(cardIndex, activeDeck.length - 1) : 0;
   const activeCard = activeDeck[safeCardIndex] ?? null;
 
-  function handleSelectDomain(nextDomain: DomainFilter) {
-    setDomainFilter(nextDomain);
+  function handleSelectCategory(nextCategory: string) {
+    setCategoryFilter(nextCategory);
     setCardIndex(0);
     setIsFlipped(false);
   }
 
   function handleJumpToFlashcard(termId: string) {
     const targetDeck =
-      domainFilter === 'ALL'
+      categoryFilter === 'ALL'
         ? deckOrder
-        : deckOrder.filter((id) => termsById.get(id)?.domain === domainFilter);
+        : deckOrder.filter((id) => termsById.get(id)?.category.trim() === categoryFilter);
     const idx = targetDeck.indexOf(termId);
     if (idx >= 0) {
       setCardIndex(idx);
     } else {
-      setDomainFilter('ALL');
+      setCategoryFilter('ALL');
       setCardIndex(Math.max(0, deckOrder.indexOf(termId)));
     }
     setIsFlipped(false);
@@ -124,7 +162,7 @@ export function GlossaryFlashcardsSection() {
         <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
           <div>
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              Słownik egzaminacyjny · {DIDACTICS_GLOSSARY.length} kluczowych pojęć
+              Słownik egzaminacyjny · {sortedTerms.length} kluczowych pojęć
             </p>
             <h2 className="font-display mt-0.5 text-lg font-bold text-slate-900 dark:text-white">
               Słownik Dydaktyki i Psychologii
@@ -170,20 +208,13 @@ export function GlossaryFlashcardsSection() {
         {/* Filtry dziedziny */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Dziedzina pojęć">
-            {(
-              [
-                { id: 'ALL', label: `Wszystkie (${domainCounts.ALL})` },
-                { id: 'Dydaktyka', label: `Dydaktyka (${domainCounts.Dydaktyka})` },
-                { id: 'Metodyka', label: `Metodyka (${domainCounts.Metodyka})` },
-                { id: 'Psychologia', label: `Psychologia (${domainCounts.Psychologia})` }
-              ] as const
-            ).map((item) => (
+            {categoryTabs.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => handleSelectDomain(item.id)}
+                onClick={() => handleSelectCategory(item.id)}
                 className={`h-8 cursor-pointer rounded-lg border px-3 text-xs font-semibold whitespace-nowrap transition-colors ${
-                  domainFilter === item.id
+                  categoryFilter === item.id
                     ? 'border-blue-600 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300'
                     : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
                 }`}
@@ -195,7 +226,8 @@ export function GlossaryFlashcardsSection() {
 
           {viewMode === 'flashcards' && (
             <span className="font-mono text-xs font-medium text-slate-600 tabular-nums dark:text-slate-400">
-              Powtórzono w sesji: {reviewedIds.length}/{DIDACTICS_GLOSSARY.length}
+              Powtórzono w sesji: {reviewedIds.filter((id) => termsById.has(id)).length}/
+              {sortedTerms.length}
             </span>
           )}
         </div>
@@ -232,18 +264,22 @@ export function GlossaryFlashcardsSection() {
         filteredList.length === 0 ? (
           <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
             <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
-              Brak haseł pasujących do frazy „{searchQuery}”.
+              {searchQuery
+                ? `Brak haseł pasujących do frazy „${searchQuery}”.`
+                : 'Brak pojęć w wybranym dziale słownika.'}
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                setSearchQuery('');
-                setDomainFilter('ALL');
-              }}
-              className="mt-3 cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
-            >
-              Pokaż wszystkie 25 pojęć
-            </button>
+            {(searchQuery || categoryFilter !== 'ALL') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setCategoryFilter('ALL');
+                }}
+                className="mt-3 cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
+              >
+                Pokaż wszystkie {sortedTerms.length} pojęć
+              </button>
+            )}
           </section>
         ) : (
           <section className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900">
@@ -256,7 +292,7 @@ export function GlossaryFlashcardsSection() {
                     </span>
                     <span aria-hidden="true">·</span>
                     <span className="font-semibold text-blue-700 dark:text-blue-400">
-                      {item.domain}
+                      {item.category}
                     </span>
                   </div>
 
@@ -277,16 +313,39 @@ export function GlossaryFlashcardsSection() {
                   {item.definition}
                 </p>
 
-                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-                  <strong className="font-semibold text-slate-900 dark:text-white">
-                    Przykład z nauki jazdy:
-                  </strong>{' '}
-                  {item.drivingExample}
-                </p>
+                {item.example.trim().length > 0 && (
+                  <p className="rounded-lg border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-xs leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                    <strong className="font-semibold text-slate-900 dark:text-white">
+                      Przykład z nauki jazdy:
+                    </strong>{' '}
+                    {item.example}
+                  </p>
+                )}
+
+                {item.examTip && item.examTip.trim().length > 0 && (
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    <strong>Wskazówka na egzamin:</strong> {item.examTip}
+                  </p>
+                )}
               </article>
             ))}
           </section>
         )
+      ) : activeDeck.length === 0 ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
+          <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+            Brak fiszek w wybranym dziale.
+          </p>
+          {categoryFilter !== 'ALL' && (
+            <button
+              type="button"
+              onClick={() => handleSelectCategory('ALL')}
+              className="mt-3 cursor-pointer text-xs font-semibold text-blue-700 hover:underline dark:text-blue-400"
+            >
+              Pokaż wszystkie fiszki ({sortedTerms.length})
+            </button>
+          )}
+        </section>
       ) : (
         /* Widok 2: Tryb Fiszek */
         activeCard && (
@@ -336,7 +395,7 @@ export function GlossaryFlashcardsSection() {
             >
               <div className="flex w-full items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
                 <span className="font-semibold text-blue-700 dark:text-blue-400">
-                  {activeCard.domain}
+                  {activeCard.category}
                 </span>
                 <span>{isFlipped ? 'Definicja i przykład (awers po kliknięciu)' : 'Pojęcie'}</span>
               </div>
@@ -364,16 +423,20 @@ export function GlossaryFlashcardsSection() {
                     </p>
                   </div>
 
-                  <div className="rounded-lg border border-slate-200 bg-white p-4 text-xs leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
-                    <p className="font-semibold text-slate-900 dark:text-white">
-                      Przykład z nauki jazdy:
-                    </p>
-                    <p className="mt-1">{activeCard.drivingExample}</p>
-                  </div>
+                  {activeCard.example.trim().length > 0 && (
+                    <div className="rounded-lg border border-slate-200 bg-white p-4 text-xs leading-relaxed text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300">
+                      <p className="font-semibold text-slate-900 dark:text-white">
+                        Przykład z nauki jazdy:
+                      </p>
+                      <p className="mt-1">{activeCard.example}</p>
+                    </div>
+                  )}
 
-                  <p className="text-xs text-amber-800 dark:text-amber-300">
-                    <strong>Wskazówka na egzamin:</strong> {activeCard.examTip}
-                  </p>
+                  {activeCard.examTip && activeCard.examTip.trim().length > 0 && (
+                    <p className="text-xs text-amber-800 dark:text-amber-300">
+                      <strong>Wskazówka na egzamin:</strong> {activeCard.examTip}
+                    </p>
+                  )}
                 </div>
               )}
 

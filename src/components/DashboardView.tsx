@@ -36,6 +36,7 @@ interface DashboardViewProps {
   notebookLmUrl?: string;
   progress: UserProgress;
   leaderboard: LeaderboardEntry[];
+  groupWrongCounts: Record<string, number>;
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
   selectedLicenseCategory: LicenseCategoryFilter;
@@ -67,6 +68,7 @@ export function DashboardView({
   notebookLmUrl,
   progress,
   leaderboard,
+  groupWrongCounts,
   selectedCategory,
   onSelectCategory,
   selectedLicenseCategory,
@@ -120,8 +122,12 @@ export function DashboardView({
   const topLeaderboard = leaderboard.slice(0, 6);
 
   const topHardestQuestions = licenseQuestions
-    .filter((q) => (q.wrongCount ?? 0) > 0)
-    .sort((a, b) => (b.wrongCount ?? 0) - (a.wrongCount ?? 0))
+    .map((q) => ({
+      question: q,
+      wrongCount: groupWrongCounts[q.id] ?? 0
+    }))
+    .filter((item) => item.wrongCount > 0)
+    .sort((a, b) => b.wrongCount - a.wrongCount)
     .slice(0, 20);
 
   return (
@@ -519,7 +525,7 @@ export function DashboardView({
               <button
                 type="button"
                 disabled={topHardestQuestions.length === 0}
-                onClick={() => onPracticeTop20(topHardestQuestions.map((q) => q.id))}
+                onClick={() => onPracticeTop20(topHardestQuestions.map((item) => item.question.id))}
                 className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
               >
                 <span>Przećwicz tę 20-stkę</span>
@@ -530,13 +536,17 @@ export function DashboardView({
 
           {top20Expanded && (
             <div className="border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/50">
-              {topHardestQuestions.length === 0 ? (
+              {isGuest ? (
                 <div className="p-6 text-center text-xs text-slate-600 dark:text-slate-400">
-                  Lista jest jeszcze pusta — buduje się automatycznie na podstawie błędnych odpowiedzi kursantów w trybie Nauki i Egzaminu.
+                  Statystyki błędów całej grupy dostępne są po zalogowaniu na darmowe konto kursanta.
+                </div>
+              ) : topHardestQuestions.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-600 dark:text-slate-400">
+                  Lista jest jeszcze pusta — buduje się automatycznie na podstawie błędnych odpowiedzi kursantów w trybie Nauki, Szybkiej 10-tce i Egzaminie.
                 </div>
               ) : (
                 <ol className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {topHardestQuestions.map((q, idx) => (
+                  {topHardestQuestions.map(({ question: q, wrongCount }, idx) => (
                     <li
                       key={q.id}
                       className="flex items-start justify-between gap-4 px-5 py-3 text-xs"
@@ -554,8 +564,8 @@ export function DashboardView({
                           </p>
                         </div>
                       </div>
-                      <span className="font-mono shrink-0 font-semibold text-red-700 tabular-nums dark:text-red-400">
-                        {formatWrongCountLabel(q.wrongCount ?? 0)}
+                      <span className="font-mono shrink-0 rounded-md border border-red-200 bg-red-50 px-2 py-0.5 font-semibold text-red-700 tabular-nums dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
+                        {formatWrongCountLabel(wrongCount)}
                       </span>
                     </li>
                   ))}

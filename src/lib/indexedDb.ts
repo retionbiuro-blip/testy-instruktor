@@ -1,13 +1,17 @@
-import { LegalAct, Lesson, Question } from '../types';
+import { ExamTopic, GlossaryTerm, LegalAct, Lesson, Question } from '../types';
 
 const DB_NAME = 'instruktor_pro_db';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 const STORE_QUESTIONS = 'questions';
 const STORE_LESSONS = 'lessons';
 const STORE_LEGAL_ACTS = 'legalActs';
+const STORE_EXAM_TOPICS = 'examTopics';
+const STORE_GLOSSARY_TERMS = 'glossaryTerms';
 const LOCAL_VERSION_KEY = 'instruktor_db_version';
 const LOCAL_LESSONS_VERSION_KEY = 'instruktor_lessons_db_version';
 const LOCAL_LEGAL_ACTS_VERSION_KEY = 'instruktor_legal_acts_db_version';
+const LOCAL_EXAM_TOPICS_VERSION_KEY = 'instruktor_exam_topics_db_version';
+const LOCAL_GLOSSARY_TERMS_VERSION_KEY = 'instruktor_glossary_terms_db_version';
 const THEME_STORAGE_KEY = 'instruktor_theme';
 const LAST_BULK_IMAGE_BATCH_KEY = 'instruktor_last_bulk_image_batch';
 
@@ -35,6 +39,12 @@ function openDatabase(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(STORE_LEGAL_ACTS)) {
         db.createObjectStore(STORE_LEGAL_ACTS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_EXAM_TOPICS)) {
+        db.createObjectStore(STORE_EXAM_TOPICS, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_GLOSSARY_TERMS)) {
+        db.createObjectStore(STORE_GLOSSARY_TERMS, { keyPath: 'id' });
       }
     };
 
@@ -177,6 +187,88 @@ export function getLocalLegalActsDbVersion(): number {
 
 export function setLocalLegalActsDbVersion(version: number): void {
   localStorage.setItem(LOCAL_LEGAL_ACTS_VERSION_KEY, String(version));
+}
+
+export async function getCachedExamTopics(): Promise<ExamTopic[]> {
+  try {
+    const db = await openDatabase();
+    return await new Promise<ExamTopic[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_EXAM_TOPICS, 'readonly');
+      const store = tx.objectStore(STORE_EXAM_TOPICS);
+      const req = store.getAll();
+      req.onsuccess = () => resolve((req.result as ExamTopic[]) || []);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn('Odczyt tematów egzaminacyjnych z IndexedDB nie powiódł się:', err);
+    return [];
+  }
+}
+
+export async function saveExamTopicsToCache(topics: ExamTopic[]): Promise<void> {
+  const db = await openDatabase();
+  return await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_EXAM_TOPICS, 'readwrite');
+    const store = tx.objectStore(STORE_EXAM_TOPICS);
+    store.clear();
+    for (const topic of topics) {
+      store.put(topic);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () =>
+      reject(tx.error ?? new Error('Błąd zapisu tematów egzaminacyjnych do IndexedDB'));
+  });
+}
+
+export function getLocalExamTopicsDbVersion(): number {
+  const raw = localStorage.getItem(LOCAL_EXAM_TOPICS_VERSION_KEY);
+  const parsed = raw ? Number(raw) : -1;
+  return Number.isFinite(parsed) ? parsed : -1;
+}
+
+export function setLocalExamTopicsDbVersion(version: number): void {
+  localStorage.setItem(LOCAL_EXAM_TOPICS_VERSION_KEY, String(version));
+}
+
+export async function getCachedGlossaryTerms(): Promise<GlossaryTerm[]> {
+  try {
+    const db = await openDatabase();
+    return await new Promise<GlossaryTerm[]>((resolve, reject) => {
+      const tx = db.transaction(STORE_GLOSSARY_TERMS, 'readonly');
+      const store = tx.objectStore(STORE_GLOSSARY_TERMS);
+      const req = store.getAll();
+      req.onsuccess = () => resolve((req.result as GlossaryTerm[]) || []);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn('Odczyt słownika fiszek z IndexedDB nie powiódł się:', err);
+    return [];
+  }
+}
+
+export async function saveGlossaryTermsToCache(terms: GlossaryTerm[]): Promise<void> {
+  const db = await openDatabase();
+  return await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(STORE_GLOSSARY_TERMS, 'readwrite');
+    const store = tx.objectStore(STORE_GLOSSARY_TERMS);
+    store.clear();
+    for (const term of terms) {
+      store.put(term);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () =>
+      reject(tx.error ?? new Error('Błąd zapisu słownika fiszek do IndexedDB'));
+  });
+}
+
+export function getLocalGlossaryTermsDbVersion(): number {
+  const raw = localStorage.getItem(LOCAL_GLOSSARY_TERMS_VERSION_KEY);
+  const parsed = raw ? Number(raw) : -1;
+  return Number.isFinite(parsed) ? parsed : -1;
+}
+
+export function setLocalGlossaryTermsDbVersion(version: number): void {
+  localStorage.setItem(LOCAL_GLOSSARY_TERMS_VERSION_KEY, String(version));
 }
 
 export function getStoredTheme(): 'light' | 'dark' {

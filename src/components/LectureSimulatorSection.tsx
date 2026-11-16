@@ -1,10 +1,17 @@
 import {
+  BookmarkPlus,
+  CheckCircle2,
   CheckSquare,
   ChevronDown,
   ChevronUp,
   Clock,
   Dices,
+  Eye,
+  EyeOff,
   FileText,
+  FolderOpen,
+  Lightbulb,
+  Loader2,
   Pause,
   Play,
   RotateCcw,
@@ -14,29 +21,22 @@ import {
   VolumeX
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { EXAM_PRESENTATION_TOPICS } from '../data/knowledgePracticeData';
+import { DEFAULT_EXAM_TOPICS } from '../data/knowledgePracticeData';
+import { saveUserOutlines } from '../services/firestoreService';
+import { ExamTopic, LessonPlanDraft, SavedOutlineEntry, UserProgress } from '../types';
+import { MarkdownContent } from './MarkdownContent';
 
-interface LessonPlanDraft {
-  topicTitle: string;
-  generalGoal: string;
-  knowledgeGoal: string;
-  attitudeGoal: string;
-  methodsPodajaca: boolean;
-  methodsProblemowa: boolean;
-  methodsEksponujaca: boolean;
-  methodsNotes: string;
-  selectedAids: string[];
-  customAids: string;
-  introMinutes: string;
-  introNotes: string;
-  mainMinutes: string;
-  mainNotes: string;
-  summaryMinutes: string;
-  summaryNotes: string;
-  checkedSteps: Record<number, boolean>;
+interface LectureSimulatorSectionProps {
+  examTopics: ExamTopic[];
+  preselectedTopicId?: string | null;
+  onPreselectedTopicConsumed?: () => void;
+  progress: UserProgress;
+  isGuest: boolean;
+  onProgressChange: (next: UserProgress) => void;
 }
 
-const STORAGE_KEY = 'instruktor_pro_lesson_plan_draft_v1';
+const DRAFT_STORAGE_KEY = 'instruktor_pro_lesson_plan_draft_v2';
+const SAVED_LIST_STORAGE_KEY = 'instruktor_pro_saved_outlines_list_v1';
 
 const TEACHING_AIDS_OPTIONS = [
   'Tablica suchościeralna i markery',
@@ -46,30 +46,6 @@ const TEACHING_AIDS_OPTIONS = [
   'Ustawa Prawo o ruchu drogowym',
   'Fantom RKO i apteczka'
 ];
-
-function createDefaultDraft(durationMin: 10 | 15 | 20 = 15): LessonPlanDraft {
-  const defaultTopic = EXAM_PRESENTATION_TOPICS[0];
-  const timing = getTimingSplit(durationMin);
-  return {
-    topicTitle: defaultTopic.title,
-    generalGoal: '',
-    knowledgeGoal: '',
-    attitudeGoal: '',
-    methodsPodajaca: true,
-    methodsProblemowa: false,
-    methodsEksponujaca: true,
-    methodsNotes: '',
-    selectedAids: ['Tablica suchościeralna i markery', 'Plansze ze znakami drogowymi'],
-    customAids: '',
-    introMinutes: String(timing.intro),
-    introNotes: '',
-    mainMinutes: String(timing.main),
-    mainNotes: '',
-    summaryMinutes: String(timing.summary),
-    summaryNotes: '',
-    checkedSteps: {}
-  };
-}
 
 function getTimingSplit(durationMin: 10 | 15 | 20): {
   intro: number;
@@ -81,23 +57,71 @@ function getTimingSplit(durationMin: 10 | 15 | 20): {
   return { intro: 2, main: 11, summary: 2 };
 }
 
-function loadSavedDraft(): LessonPlanDraft {
+function createEmptyDraft(topicTitle: string, durationMin: 10 | 15 | 20 = 15): LessonPlanDraft {
+  const timing = getTimingSplit(durationMin);
+  return {
+    topicTitle,
+    generalGoal: '',
+    knowledgeGoal: '',
+    attitudeGoal: '',
+    methodsPodajaca: false,
+    methodsProblemowa: false,
+    methodsEksponujaca: false,
+    methodsNotes: '',
+    selectedAids: [],
+    customAids: '',
+    introMinutes: String(timing.intro),
+    introNotes: '',
+    mainMinutes: String(timing.main),
+    mainNotes: '',
+    summaryMinutes: String(timing.summary),
+    summaryNotes: '',
+    checkedSteps: {}
+  };
+}
+
+function loadSavedDraft(fallbackTopicTitle: string): LessonPlanDraft {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return createDefaultDraft(15);
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return createEmptyDraft(fallbackTopicTitle, 15);
     const parsed = JSON.parse(raw) as Partial<LessonPlanDraft>;
     return {
-      ...createDefaultDraft(15),
+      ...createEmptyDraft(fallbackTopicTitle, 15),
       ...parsed,
-      selectedAids: Array.isArray(parsed.selectedAids)
-        ? parsed.selectedAids
-        : ['Tablica suchościeralna i markery', 'Plansze ze znakami drogowymi'],
+      selectedAids: Array.isArray(parsed.selectedAids) ? parsed.selectedAids : [],
       checkedSteps:
         parsed.checkedSteps && typeof parsed.checkedSteps === 'object' ? parsed.checkedSteps : {}
     };
   } catch {
-    return createDefaultDraft(15);
+    return createEmptyDraft(fallbackTopicTitle, 15);
   }
+}
+
+function loadSavedOutlinesList(): SavedOutlineEntry[] {
+  try {
+    const raw = localStorage.getItem(SAVED_LIST_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return (parsed as SavedOutlineEntry[]).slice(0, 50).map((entry) => ({
+      ...entry,
+      updatedAt: entry.updatedAt || entry.savedAtIso || new Date().toISOString()
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function computeCompletedStepsCount(draft: LessonPlanDraft): number {
+  const step1 = Boolean(draft.topicTitle.trim() && draft.generalGoal.trim());
+  const step2 = Boolean(draft.knowledgeGoal.trim() || draft.attitudeGoal.trim());
+  const step3 = draft.methodsPodajaca || draft.methodsProblemowa || draft.methodsEksponujaca;
+  const step4 = draft.selectedAids.length > 0 || Boolean(draft.customAids.trim());
+  const step5 = Boolean(
+    draft.introNotes.trim() || draft.mainNotes.trim() || draft.summaryNotes.trim()
+  );
+  const autoStates = [step1, step2, step3, step4, step5];
+  return autoStates.filter((filled, idx) => Boolean(draft.checkedSteps[idx + 1]) || filled).length;
 }
 
 function formatTimer(totalSeconds: number): string {
@@ -105,6 +129,20 @@ function formatTimer(totalSeconds: number): string {
   const mins = Math.floor(safe / 60);
   const secs = safe % 60;
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatSavedDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString('pl-PL', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch {
+    return iso;
+  }
 }
 
 function playEndAlarmChime(): void {
@@ -133,8 +171,22 @@ function playEndAlarmChime(): void {
   }
 }
 
-export function LectureSimulatorSection() {
-  const [selectedPresetId, setSelectedPresetId] = useState<string>(EXAM_PRESENTATION_TOPICS[0].id);
+export function LectureSimulatorSection({
+  examTopics,
+  preselectedTopicId,
+  onPreselectedTopicConsumed,
+  progress,
+  isGuest,
+  onProgressChange
+}: LectureSimulatorSectionProps) {
+  const topics = useMemo(() => {
+    const source = examTopics.length > 0 ? examTopics : DEFAULT_EXAM_TOPICS;
+    return [...source].sort((a, b) => a.order - b.order || a.title.localeCompare(b.title, 'pl'));
+  }, [examTopics]);
+
+  const initialTopic = topics[0] ?? DEFAULT_EXAM_TOPICS[0];
+
+  const [selectedPresetId, setSelectedPresetId] = useState<string>(initialTopic.id);
   const [durationMinutes, setDurationMinutes] = useState<10 | 15 | 20>(15);
   const [secondsLeft, setSecondsLeft] = useState<number>(15 * 60);
   const [timerRunning, setTimerRunning] = useState(false);
@@ -142,19 +194,59 @@ export function LectureSimulatorSection() {
   const [soundEnabled, setSoundEnabled] = useState(true);
 
   const [checklistExpanded, setChecklistExpanded] = useState(true);
-  const [draft, setDraft] = useState<LessonPlanDraft>(() => loadSavedDraft());
+  const [showSampleHint, setShowSampleHint] = useState(false);
+  const [draft, setDraft] = useState<LessonPlanDraft>(() => loadSavedDraft(initialTopic.title));
+  const [guestSavedOutlines, setGuestSavedOutlines] = useState<SavedOutlineEntry[]>(() =>
+    loadSavedOutlinesList()
+  );
+  const [savedListExpanded, setSavedListExpanded] = useState(false);
+  const [savingOutline, setSavingOutline] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const savedOutlines = useMemo(
+    () => (isGuest ? guestSavedOutlines : (progress.savedOutlines ?? [])),
+    [isGuest, guestSavedOutlines, progress.savedOutlines]
+  );
 
   const soundEnabledRef = useRef(soundEnabled);
   soundEnabledRef.current = soundEnabled;
 
-  // Zapis roboczy konspektu w pamięci przeglądarki
+  // Obsługa przejścia z Bazy Wiedzy -> "Przećwicz ten temat na Egzaminie"
+  useEffect(() => {
+    if (!preselectedTopicId) return;
+    const found = topics.find((t) => t.id === preselectedTopicId);
+    if (found) {
+      setSelectedPresetId(found.id);
+      setDraft(createEmptyDraft(found.title, durationMinutes));
+      setShowSampleHint(false);
+      setSaveFeedback(null);
+      setSaveError(null);
+      setTimerRunning(false);
+      setTimerFinished(false);
+      setSecondsLeft(durationMinutes * 60);
+    }
+    onPreselectedTopicConsumed?.();
+  }, [preselectedTopicId, topics, durationMinutes, onPreselectedTopicConsumed]);
+
+  // Zapis roboczy bieżącego konspektu w localStorage (bufor podczas pisania)
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(draft));
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
     } catch {
       // Ignorujemy brak miejsca w localStorage
     }
   }, [draft]);
+
+  // Zapis listy konspektów w localStorage wyłącznie w trybie gościa (fallback)
+  useEffect(() => {
+    if (!isGuest) return;
+    try {
+      localStorage.setItem(SAVED_LIST_STORAGE_KEY, JSON.stringify(guestSavedOutlines));
+    } catch {
+      // Ignorujemy brak miejsca w localStorage
+    }
+  }, [isGuest, guestSavedOutlines]);
 
   // Odliczanie timera prezentacji
   useEffect(() => {
@@ -176,14 +268,19 @@ export function LectureSimulatorSection() {
     return () => window.clearInterval(interval);
   }, [timerRunning]);
 
-  const activePreset = useMemo(
-    () => EXAM_PRESENTATION_TOPICS.find((t) => t.id === selectedPresetId) ?? null,
-    [selectedPresetId]
-  );
+  const matchedTopic = useMemo(() => {
+    const trimmedTitle = draft.topicTitle.trim().toLowerCase();
+    const byId = topics.find((t) => t.id === selectedPresetId);
+    if (byId && byId.title.trim().toLowerCase() === trimmedTitle) {
+      return byId;
+    }
+    return topics.find((t) => t.title.trim().toLowerCase() === trimmedTitle) ?? null;
+  }, [topics, selectedPresetId, draft.topicTitle]);
 
   const totalSeconds = durationMinutes * 60;
   const elapsedSeconds = Math.max(0, totalSeconds - secondsLeft);
-  const progressPct = totalSeconds > 0 ? Math.min(100, Math.round((elapsedSeconds / totalSeconds) * 100)) : 0;
+  const progressPct =
+    totalSeconds > 0 ? Math.min(100, Math.round((elapsedSeconds / totalSeconds) * 100)) : 0;
 
   const recommendedSplit = useMemo(() => getTimingSplit(durationMinutes), [durationMinutes]);
   const currentPhaseLabel = useMemo(() => {
@@ -197,17 +294,7 @@ export function LectureSimulatorSection() {
     return `Faza 3: Podsumowanie (ostatnie ${recommendedSplit.summary} min)`;
   }, [elapsedSeconds, timerRunning, timerFinished, recommendedSplit]);
 
-  const completedChecklistCount = useMemo(() => {
-    const step1 = Boolean(draft.topicTitle.trim() && draft.generalGoal.trim());
-    const step2 = Boolean(draft.knowledgeGoal.trim() || draft.attitudeGoal.trim());
-    const step3 = draft.methodsPodajaca || draft.methodsProblemowa || draft.methodsEksponujaca;
-    const step4 = draft.selectedAids.length > 0 || Boolean(draft.customAids.trim());
-    const step5 = Boolean(
-      draft.introNotes.trim() || draft.mainNotes.trim() || draft.summaryNotes.trim()
-    );
-    const autoStates = [step1, step2, step3, step4, step5];
-    return autoStates.filter((filled, idx) => Boolean(draft.checkedSteps[idx + 1]) || filled).length;
-  }, [draft]);
+  const completedChecklistCount = useMemo(() => computeCompletedStepsCount(draft), [draft]);
 
   function handleSelectDuration(mins: 10 | 15 | 20) {
     setTimerRunning(false);
@@ -230,15 +317,20 @@ export function LectureSimulatorSection() {
   }
 
   function handleDrawRandomTopic() {
-    const pool = EXAM_PRESENTATION_TOPICS.filter((t) => t.id !== selectedPresetId);
-    const picked = pool[Math.floor(Math.random() * pool.length)] ?? EXAM_PRESENTATION_TOPICS[0];
+    if (topics.length === 0) return;
+    const pool = topics.length > 1 ? topics.filter((t) => t.id !== selectedPresetId) : topics;
+    const picked = pool[Math.floor(Math.random() * pool.length)] ?? topics[0];
     setSelectedPresetId(picked.id);
+    setShowSampleHint(false);
+    setSaveFeedback(null);
     setDraft((prev) => ({ ...prev, topicTitle: picked.title }));
   }
 
   function handlePickPreset(topicId: string) {
     setSelectedPresetId(topicId);
-    const found = EXAM_PRESENTATION_TOPICS.find((t) => t.id === topicId);
+    setShowSampleHint(false);
+    setSaveFeedback(null);
+    const found = topics.find((t) => t.id === topicId);
     if (found) {
       setDraft((prev) => ({ ...prev, topicTitle: found.title }));
     }
@@ -267,10 +359,93 @@ export function LectureSimulatorSection() {
   }
 
   function handleResetDraft() {
+    setSaveFeedback(null);
+    setDraft(createEmptyDraft(draft.topicTitle, durationMinutes));
+  }
+
+  async function handleSaveCurrentToList() {
+    if (savingOutline) return;
+    const cleanTitle = draft.topicTitle.trim() || 'Własny temat wystąpienia';
+    const entry: SavedOutlineEntry = {
+      id: `outline_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      topicTitle: cleanTitle,
+      updatedAt: new Date().toISOString(),
+      durationMinutes,
+      completedSteps: completedChecklistCount,
+      draft: {
+        ...draft,
+        topicTitle: cleanTitle
+      }
+    };
+
+    setSaveError(null);
+    if (isGuest) {
+      setGuestSavedOutlines((prev) => [entry, ...prev].slice(0, 50));
+      setSavedListExpanded(true);
+      setSaveFeedback(`Zapisano konspekt „${cleanTitle}” lokalnie w przeglądarce (tryb gościa).`);
+      return;
+    }
+
+    setSavingOutline(true);
+    try {
+      const nextList = [entry, ...(progress.savedOutlines ?? [])].slice(0, 50);
+      const updated = await saveUserOutlines(progress, nextList);
+      onProgressChange(updated);
+      setSavedListExpanded(true);
+      setSaveFeedback(
+        `Zapisano konspekt „${cleanTitle}” na Twoim koncie (zsynchronizowano z chmurą).`
+      );
+    } catch (err) {
+      console.error('Nie udało się zapisać konspektu w Firestore:', err);
+      setSaveError('Nie udało się zapisać konspektu na koncie. Spróbuj ponownie.');
+    } finally {
+      setSavingOutline(false);
+    }
+  }
+
+  function handleLoadSavedOutline(entry: SavedOutlineEntry) {
+    setDurationMinutes(entry.durationMinutes);
+    setSecondsLeft(entry.durationMinutes * 60);
+    setTimerRunning(false);
+    setTimerFinished(false);
     setDraft({
-      ...createDefaultDraft(durationMinutes),
-      topicTitle: draft.topicTitle
+      ...entry.draft,
+      selectedAids: Array.isArray(entry.draft.selectedAids) ? entry.draft.selectedAids : [],
+      checkedSteps:
+        entry.draft.checkedSteps && typeof entry.draft.checkedSteps === 'object'
+          ? entry.draft.checkedSteps
+          : {}
     });
+    const match = topics.find(
+      (t) => t.title.trim().toLowerCase() === entry.topicTitle.trim().toLowerCase()
+    );
+    if (match) {
+      setSelectedPresetId(match.id);
+    }
+    setShowSampleHint(false);
+    setSaveError(null);
+    setSaveFeedback(`Wczytano zapisany konspekt „${entry.topicTitle}”.`);
+  }
+
+  async function handleDeleteSavedOutline(entryId: string) {
+    if (savingOutline) return;
+    setSaveError(null);
+    if (isGuest) {
+      setGuestSavedOutlines((prev) => prev.filter((item) => item.id !== entryId));
+      return;
+    }
+
+    setSavingOutline(true);
+    try {
+      const nextList = (progress.savedOutlines ?? []).filter((item) => item.id !== entryId);
+      const updated = await saveUserOutlines(progress, nextList);
+      onProgressChange(updated);
+    } catch (err) {
+      console.error('Nie udało się usunąć konspektu z Firestore:', err);
+      setSaveError('Nie udało się usunąć konspektu z konta. Spróbuj ponownie.');
+    } finally {
+      setSavingOutline(false);
+    }
   }
 
   const isLowTime = secondsLeft > 0 && secondsLeft <= 60;
@@ -278,7 +453,7 @@ export function LectureSimulatorSection() {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 lg:items-start">
-        {/* Lewa strefa: Temat wylosowany na egzamin + Interaktywny Timer prezentacji */}
+        {/* Lewa strefa: Temat wylosowany na egzamin + Podpowiedź wzoru + Timer */}
         <div className="space-y-6 lg:col-span-5">
           {/* Karta wyboru / losowania tematu */}
           <section
@@ -288,7 +463,7 @@ export function LectureSimulatorSection() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-                  Symulator Wystąpienia Egzaminacyjnego
+                  Część II Egzaminu · Pokaz przeprowadzenia zajęć
                 </p>
                 <h2 className="font-display mt-0.5 text-lg font-bold text-slate-900 dark:text-white">
                   Temat pokazu wykładu
@@ -311,7 +486,7 @@ export function LectureSimulatorSection() {
                   htmlFor="preset-topic-select"
                   className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300"
                 >
-                  Przykładowe tematy egzaminacyjne ({EXAM_PRESENTATION_TOPICS.length})
+                  Tematy z bazy egzaminacyjnej ({topics.length})
                 </label>
                 <select
                   id="preset-topic-select"
@@ -319,7 +494,7 @@ export function LectureSimulatorSection() {
                   onChange={(e) => handlePickPreset(e.target.value)}
                   className="h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                 >
-                  {EXAM_PRESENTATION_TOPICS.map((topic, idx) => (
+                  {topics.map((topic, idx) => (
                     <option key={topic.id} value={topic.id}>
                       {idx + 1}. [{topic.category}] {topic.title}
                     </option>
@@ -344,16 +519,72 @@ export function LectureSimulatorSection() {
                 />
               </div>
 
-              {activePreset && draft.topicTitle.trim() === activePreset.title && (
-                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs leading-relaxed text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-                  <strong className="font-semibold text-slate-800 dark:text-slate-200">
-                    Na co zwraca uwagę komisja:
-                  </strong>{' '}
-                  {activePreset.hint}
-                </p>
+              {/* Ukryty domyślnie przycisk porównania ze wzorem konspektu */}
+              {matchedTopic && (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    aria-expanded={showSampleHint}
+                    onClick={() => setShowSampleHint((v) => !v)}
+                    className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-amber-300 bg-amber-50/80 px-3.5 py-2.5 text-xs font-semibold text-amber-950 transition-colors hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/35 dark:text-amber-200 dark:hover:bg-amber-950/60"
+                  >
+                    {showSampleHint ? (
+                      <>
+                        <EyeOff className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span>Ukryj wzór konspektu</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span>Podejrzyj wzór konspektu (podpowiedź)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           </section>
+
+          {/* Rozwijana podpowiedź wzorcowego konspektu (domyślnie ukryta) */}
+          {matchedTopic && showSampleHint && (
+            <section
+              aria-label="Podgląd wzoru konspektu"
+              className="space-y-4 rounded-xl border border-amber-300 bg-white p-5 dark:border-amber-800 dark:bg-slate-900"
+            >
+              <div className="flex items-start justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800">
+                <div className="flex items-center gap-2">
+                  <Lightbulb className="h-4 w-4 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+                  <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                    Wzór konspektu do porównania
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowSampleHint(false)}
+                  className="cursor-pointer text-xs font-semibold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                >
+                  Zwiń
+                </button>
+              </div>
+
+              {matchedTopic.commissionTips.trim().length > 0 && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs leading-relaxed text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-100">
+                  <strong className="font-semibold">Na co zwraca uwagę komisja:</strong>{' '}
+                  {matchedTopic.commissionTips}
+                </div>
+              )}
+
+              {matchedTopic.sampleOutline.trim().length > 0 ? (
+                <div className="max-h-[420px] overflow-y-auto pr-1">
+                  <MarkdownContent content={matchedTopic.sampleOutline} />
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Dla tego tematu nie dodano jeszcze pełnego wzoru konspektu — wykorzystaj powyższe wskazówki komisji oraz strukturę 5 punktów.
+                </p>
+              )}
+            </section>
+          )}
 
           {/* Karta Interaktywnego Timera Prezentacji */}
           <section
@@ -493,9 +724,89 @@ export function LectureSimulatorSection() {
               </button>
             </div>
           </section>
+
+          {/* Lista zapisanych konspektów kursanta (Firestore dla zalogowanych, localStorage dla Gościa) */}
+          <section
+            aria-label="Moje zapisane konspekty"
+            className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+          >
+            <button
+              type="button"
+              onClick={() => setSavedListExpanded((v) => !v)}
+              aria-expanded={savedListExpanded}
+              className="flex w-full cursor-pointer items-center justify-between gap-3 px-5 py-4 text-left hover:bg-slate-50 dark:hover:bg-slate-800/40"
+            >
+              <div className="flex items-center gap-2.5">
+                <FolderOpen className="h-4 w-4 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+                <div>
+                  <h3 className="font-display text-sm font-bold text-slate-900 dark:text-white">
+                    Moje zapisane konspekty ({savedOutlines.length}/50)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {isGuest
+                      ? 'Tryb gościa (zapis lokalny w przeglądarce) — zaloguj się, aby synchronizować'
+                      : 'Synchronizowane z Twoim kontem (telefon i komputer) — wczytaj szkic jednym kliknięciem'}
+                  </p>
+                </div>
+              </div>
+              {savedListExpanded ? (
+                <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+              ) : (
+                <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
+              )}
+            </button>
+
+            {savedListExpanded && (
+              <div className="border-t border-slate-200 dark:border-slate-800">
+                {savedOutlines.length === 0 ? (
+                  <p className="p-5 text-center text-xs text-slate-500 dark:text-slate-400">
+                    Nie zapisałeś jeszcze żadnego konspektu na liście. Uzupełnij punkty po prawej i kliknij „Zapisz mój konspekt na liście”.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                    {savedOutlines.map((entry) => (
+                      <div key={entry.id} className="space-y-2 p-4">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-900 dark:text-white">
+                              {entry.topicTitle}
+                            </p>
+                            <p className="font-mono mt-0.5 text-[11px] text-slate-500 tabular-nums dark:text-slate-400">
+                              {formatSavedDate(entry.updatedAt || entry.savedAtIso || '')} ·{' '}
+                              {entry.durationMinutes} min · {entry.completedSteps}/5 pkt
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadSavedOutline(entry)}
+                            className="cursor-pointer rounded-md border border-blue-600 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-800 hover:bg-blue-100 dark:border-blue-500 dark:bg-blue-950/40 dark:text-blue-300"
+                          >
+                            Wczytaj do edytora
+                          </button>
+                          <button
+                            type="button"
+                            disabled={savingOutline}
+                            onClick={() => void handleDeleteSavedOutline(entry.id)}
+                            aria-label={`Usuń zapisany konspekt: ${entry.topicTitle}`}
+                            className="flex cursor-pointer items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950 dark:text-red-400 dark:hover:bg-red-950/30"
+                          >
+                            <Trash2 className="h-3 w-3" aria-hidden="true" />
+                            <span>Usuń</span>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
         </div>
 
-        {/* Prawa strefa: Rozwijana Checklista Konspektu Lekcji */}
+        {/* Prawa strefa: Pusta Checklista Konspektu Lekcji do ćwiczenia z pamięci */}
         <section
           aria-label="Checklista Konspektu Lekcji"
           className="overflow-hidden rounded-xl border border-slate-200 bg-white lg:col-span-7 dark:border-slate-800 dark:bg-slate-900"
@@ -512,15 +823,33 @@ export function LectureSimulatorSection() {
                     Ukończono {completedChecklistCount}/5 punktów
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span>Zapis automatyczny w przeglądarce</span>
+                  <span>
+                    {isGuest
+                      ? 'Ćwiczenie z pamięci (zapis w przeglądarce)'
+                      : 'Ćwiczenie z pamięci (zapis na koncie)'}
+                  </span>
                 </div>
                 <h2 className="font-display mt-0.5 text-lg font-bold text-slate-900 dark:text-white">
-                  Checklista Konspektu Lekcji
+                  Mój Konspekt Lekcji
                 </h2>
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={savingOutline}
+                onClick={() => void handleSaveCurrentToList()}
+                className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-emerald-700 px-3 text-xs font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+              >
+                {savingOutline ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <BookmarkPlus className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>{savingOutline ? 'Zapisywanie...' : 'Zapisz mój konspekt na liście'}</span>
+              </button>
+
               <button
                 type="button"
                 onClick={handleResetDraft}
@@ -540,17 +869,36 @@ export function LectureSimulatorSection() {
                 {checklistExpanded ? (
                   <>
                     <ChevronUp className="h-4 w-4" aria-hidden="true" />
-                    <span>Zwiń konspekt</span>
+                    <span>Zwiń</span>
                   </>
                 ) : (
                   <>
                     <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                    <span>Rozwiń konspekt</span>
+                    <span>Rozwiń</span>
                   </>
                 )}
               </button>
             </div>
           </div>
+
+          {saveError && (
+            <div
+              role="alert"
+              className="border-b border-red-200 bg-red-50 px-5 py-2.5 text-xs font-medium text-red-900 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-200"
+            >
+              {saveError}
+            </div>
+          )}
+
+          {saveFeedback && (
+            <div
+              role="status"
+              className="flex items-center gap-2 border-b border-emerald-200 bg-emerald-50 px-5 py-2.5 text-xs font-medium text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/40 dark:text-emerald-200"
+            >
+              <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{saveFeedback}</span>
+            </div>
+          )}
 
           {checklistExpanded && (
             <div className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -576,14 +924,17 @@ export function LectureSimulatorSection() {
                 </div>
 
                 <p className="text-xs text-slate-600 dark:text-slate-400">
-                  Wybrany temat: <strong className="text-slate-900 dark:text-slate-200">{draft.topicTitle || 'Nie wpisano tematu'}</strong>
+                  Wybrany temat:{' '}
+                  <strong className="text-slate-900 dark:text-slate-200">
+                    {draft.topicTitle || 'Nie wpisano tematu'}
+                  </strong>
                 </p>
 
                 <textarea
                   rows={2}
                   value={draft.generalGoal}
                   onChange={(e) => setDraft((prev) => ({ ...prev, generalGoal: e.target.value }))}
-                  placeholder="Cel ogólny (np. Zapoznanie kursantów z zasadami bezpiecznego pokonywania skrzyżowań oraz kształcenie nawyku szczególnej ostrożności)..."
+                  placeholder="Wpisz z pamięci cel ogólny zajęć..."
                   className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                 />
               </div>
@@ -625,7 +976,7 @@ export function LectureSimulatorSection() {
                       onChange={(e) =>
                         setDraft((prev) => ({ ...prev, knowledgeGoal: e.target.value }))
                       }
-                      placeholder="Kursant zna definicje, wymienia warunki, potrafi wskazać kolejność przejazdu..."
+                      placeholder="Kursant definiuje, wymienia, rozpoznaje..."
                       className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                     />
                   </div>
@@ -644,7 +995,7 @@ export function LectureSimulatorSection() {
                       onChange={(e) =>
                         setDraft((prev) => ({ ...prev, attitudeGoal: e.target.value }))
                       }
-                      placeholder="Kursant docenia kulturę jazdy, zachowuje cierpliwość wobec pieszych, unika ryzyka..."
+                      placeholder="Kursant kształtuje nawyk, docenia bezpieczeństwo..."
                       className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                     />
                   </div>
@@ -731,7 +1082,7 @@ export function LectureSimulatorSection() {
                   type="text"
                   value={draft.methodsNotes}
                   onChange={(e) => setDraft((prev) => ({ ...prev, methodsNotes: e.target.value }))}
-                  placeholder="Uwagi do metod (np. w 5. minucie krótkie pytanie problemowe do grupy)..."
+                  placeholder="Uwagi do wybranych metod nauczania..."
                   className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                 />
               </div>
@@ -782,7 +1133,7 @@ export function LectureSimulatorSection() {
                   type="text"
                   value={draft.customAids}
                   onChange={(e) => setDraft((prev) => ({ ...prev, customAids: e.target.value }))}
-                  placeholder="Inne pomoce (np. trójkąt ostrzegawczy, kamera samochodowa, schemat ronda)..."
+                  placeholder="Inne pomoce dydaktyczne..."
                   className="h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
                 />
               </div>
@@ -815,7 +1166,7 @@ export function LectureSimulatorSection() {
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="text-xs font-bold text-slate-900 dark:text-white">
-                        A. Wstęp (powitanie, nawiązanie do poprzednich zajęć, podanie tematu i celów)
+                        A. Wstęp (powitanie, nawiązanie, podanie tematu i celów)
                       </span>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -838,7 +1189,7 @@ export function LectureSimulatorSection() {
                       onChange={(e) =>
                         setDraft((prev) => ({ ...prev, introNotes: e.target.value }))
                       }
-                      placeholder="Szybkie pytanie na rozgrzewkę lub przykład z codziennej jazdy..."
+                      placeholder="Szybkie pytanie na rozgrzewkę i wprowadzenie..."
                       className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     />
                   </div>
@@ -847,7 +1198,7 @@ export function LectureSimulatorSection() {
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="text-xs font-bold text-slate-900 dark:text-white">
-                        B. Część główna (realizacja zagadnień w punktach, przykłady, rysunek na tablicy)
+                        B. Część główna (zagadnienia, przykłady, rysunek na tablicy)
                       </span>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -868,7 +1219,7 @@ export function LectureSimulatorSection() {
                       rows={3}
                       value={draft.mainNotes}
                       onChange={(e) => setDraft((prev) => ({ ...prev, mainNotes: e.target.value }))}
-                      placeholder="1) Podstawa prawna i definicje, 2) Rozrysowanie sytuacji na tablicy, 3) Najczęstsze błędy kierowców..."
+                      placeholder="1) Podstawa prawna, 2) Rozrysowanie sytuacji, 3) Błędy kierowców..."
                       className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     />
                   </div>
@@ -877,7 +1228,7 @@ export function LectureSimulatorSection() {
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <span className="text-xs font-bold text-slate-900 dark:text-white">
-                        C. Podsumowanie (utrwalenie najważniejszych wniosków, pytania kontrolne do grupy)
+                        C. Podsumowanie (utrwalenie wniosków, pytania kontrolne)
                       </span>
                       <div className="flex items-center gap-1.5">
                         <input
@@ -900,7 +1251,7 @@ export function LectureSimulatorSection() {
                       onChange={(e) =>
                         setDraft((prev) => ({ ...prev, summaryNotes: e.target.value }))
                       }
-                      placeholder="2 pytania sprawdzające zrozumienie + podsumowanie kluczowej zasady bezpieczeństwa..."
+                      placeholder="Pytania sprawdzające zrozumienie + kluczowy wniosek BRD..."
                       className="w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-white"
                     />
                   </div>

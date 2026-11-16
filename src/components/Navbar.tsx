@@ -164,10 +164,10 @@ export function Navbar({
         </div>
       </header>
 
-      {/* Kompaktowy pasek nawigacji mobilnej (poniżej 15% wysokości ekranu) */}
+      {/* Kompaktowy pasek nawigacji mobilnej z bezpiecznym marginesem dolnym dla nakładek hostingu */}
       <nav
         aria-label="Nawigacja mobilna"
-        className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-between gap-0.5 overflow-x-auto border-t border-slate-200 bg-white/95 px-1.5 py-1.5 backdrop-blur-sm md:hidden dark:border-slate-800 dark:bg-slate-950/95"
+        className="fixed right-0 bottom-0 left-0 z-30 flex items-center justify-between gap-0.5 overflow-x-auto border-t border-slate-200 bg-white/95 px-1.5 pt-1.5 pb-12 backdrop-blur-sm md:hidden dark:border-slate-800 dark:bg-slate-950/95"
       >
         {navItems.map((item) => {
           const isActive =

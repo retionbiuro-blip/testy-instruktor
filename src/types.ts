@@ -32,6 +32,31 @@ export interface Lesson {
   updatedAt?: unknown;
 }
 
+export interface ExamTopic {
+  id: string;
+  category: string;
+  title: string;
+  commissionTips: string;
+  sampleOutline: string;
+  order: number;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
+export type GlossaryCategory = 'Dydaktyka' | 'Psychologia' | 'Metodyka';
+
+export interface GlossaryTerm {
+  id: string;
+  category: string;
+  term: string;
+  definition: string;
+  example: string;
+  order: number;
+  examTip?: string;
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 export type LegalActType = 'ustawa' | 'rozporzadzenie' | 'inne';
 
 export interface LegalAct {
@@ -87,6 +112,36 @@ export interface ExamHistoryItem {
   dateIso: string;
 }
 
+export interface LessonPlanDraft {
+  topicTitle: string;
+  generalGoal: string;
+  knowledgeGoal: string;
+  attitudeGoal: string;
+  methodsPodajaca: boolean;
+  methodsProblemowa: boolean;
+  methodsEksponujaca: boolean;
+  methodsNotes: string;
+  selectedAids: string[];
+  customAids: string;
+  introMinutes: string;
+  introNotes: string;
+  mainMinutes: string;
+  mainNotes: string;
+  summaryMinutes: string;
+  summaryNotes: string;
+  checkedSteps: Record<string, boolean>;
+}
+
+export interface SavedOutlineEntry {
+  id: string;
+  topicTitle: string;
+  updatedAt: string;
+  savedAtIso?: string;
+  durationMinutes: 10 | 15 | 20;
+  completedSteps: number;
+  draft: LessonPlanDraft;
+}
+
 export interface UserProgress {
   uid: string;
   nick: string;
@@ -97,6 +152,7 @@ export interface UserProgress {
   mistakeStreaks: Record<string, number>;
   askLecturerIds: string[];
   privateNotes: Record<string, string>;
+  savedOutlines?: SavedOutlineEntry[];
   totalAnswered: number;
   totalCorrect: number;
   points: number;

@@ -54,7 +54,19 @@ import {
   saveCategoriesList,
   updateReportStatus
 } from '../services/firestoreService';
-import { LegalAct, Lesson, LicenseCategory, ParsedQuestionInput, Question, ReportItem } from '../types';
+import {
+  ExamTopic,
+  GlossaryTerm,
+  LegalAct,
+  Lesson,
+  LicenseCategory,
+  ParsedQuestionInput,
+  Question,
+  ReportItem
+} from '../types';
+import { DEFAULT_EXAM_TOPICS, DIDACTICS_GLOSSARY } from '../data/knowledgePracticeData';
+import { AdminExamTopicsTab } from './AdminExamTopicsTab';
+import { AdminGlossaryTab } from './AdminGlossaryTab';
 import { AdminLegalActsTab } from './AdminLegalActsTab';
 import { AdminMaterialsTab } from './AdminMaterialsTab';
 import { BulkImageMatcher } from './BulkImageMatcher';
@@ -64,13 +76,25 @@ interface AdminPanelProps {
   questions: Question[];
   lessons: Lesson[];
   legalActs: LegalAct[];
+  examTopics: ExamTopic[];
+  glossaryTerms: GlossaryTerm[];
   categories: string[];
   notebookLmUrl?: string;
   reports: ReportItem[];
-  initialTab?: 'import' | 'questions' | 'categories' | 'lessons' | 'legal-acts' | 'reports';
+  initialTab?:
+    | 'import'
+    | 'questions'
+    | 'categories'
+    | 'lessons'
+    | 'legal-acts'
+    | 'exam-topics'
+    | 'glossary'
+    | 'reports';
   onQuestionsUpdated: (nextQuestions: Question[], nextCategories: string[], nextVersion: number) => void;
   onLessonsUpdated: (nextLessons: Lesson[], nextCategories: string[], nextVersion: number) => void;
   onLegalActsUpdated: (nextActs: LegalAct[], nextVersion: number) => void;
+  onExamTopicsUpdated: (nextTopics: ExamTopic[], nextVersion: number) => void;
+  onGlossaryTermsUpdated: (nextTerms: GlossaryTerm[], nextVersion: number) => void;
   onNotebookLmUpdated: (nextUrl: string | undefined, nextVersion: number) => void;
   onReportsUpdated: (nextReports: ReportItem[]) => void;
   onRefreshReports: () => Promise<void>;
@@ -82,6 +106,8 @@ export function AdminPanel({
   questions,
   lessons,
   legalActs,
+  examTopics,
+  glossaryTerms,
   categories,
   notebookLmUrl,
   reports,
@@ -89,12 +115,21 @@ export function AdminPanel({
   onQuestionsUpdated,
   onLessonsUpdated,
   onLegalActsUpdated,
+  onExamTopicsUpdated,
+  onGlossaryTermsUpdated,
   onNotebookLmUpdated,
   onReportsUpdated,
   onRefreshReports
 }: AdminPanelProps) {
   const [activeTab, setActiveTab] = useState<
-    'import' | 'questions' | 'categories' | 'lessons' | 'legal-acts' | 'reports'
+    | 'import'
+    | 'questions'
+    | 'categories'
+    | 'lessons'
+    | 'legal-acts'
+    | 'exam-topics'
+    | 'glossary'
+    | 'reports'
   >(initialTab ?? 'import');
 
   useEffect(() => {
@@ -935,6 +970,36 @@ export function AdminPanel({
           <button
             type="button"
             onClick={() => {
+              setActiveTab('exam-topics');
+              setBulkMatchMode(false);
+              setSieveMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'exam-topics'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Konspekty i Tematy ({examTopics.length > 0 ? examTopics.length : DEFAULT_EXAM_TOPICS.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('glossary');
+              setBulkMatchMode(false);
+              setSieveMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'glossary'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Słownik / Fiszki ({glossaryTerms.length > 0 ? glossaryTerms.length : DIDACTICS_GLOSSARY.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => {
               setActiveTab('reports');
               setBulkMatchMode(false);
               setSieveMode(false);
@@ -967,6 +1032,23 @@ export function AdminPanel({
         <AdminLegalActsTab
           legalActs={legalActs}
           onLegalActsUpdated={onLegalActsUpdated}
+        />
+      )}
+
+      {/* ZAKŁADKA: KONSPEKTY I TEMATY EGZAMINACYJNE */}
+      {activeTab === 'exam-topics' && (
+        <AdminExamTopicsTab
+          examTopics={examTopics}
+          categories={allCategoryNames}
+          onExamTopicsUpdated={onExamTopicsUpdated}
+        />
+      )}
+
+      {/* ZAKŁADKA: SŁOWNIK DYDAKTYKI I PSYCHOLOGII / FISZKI */}
+      {activeTab === 'glossary' && (
+        <AdminGlossaryTab
+          glossaryTerms={glossaryTerms}
+          onGlossaryTermsUpdated={onGlossaryTermsUpdated}
         />
       )}
 
