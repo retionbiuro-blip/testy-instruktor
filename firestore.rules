@@ -39,26 +39,54 @@ service cloud.firestore {
     // --- WALIDATORY SCHEMATÓW ---
     function isValidSystemMetadata(data) {
       return data.keys().hasAll(['dbVersion', 'categories']) &&
-        data.keys().hasOnly(['dbVersion', 'categories', 'updatedAt']) &&
+        data.keys().hasOnly(['dbVersion', 'categories', 'notebookLmUrl', 'updatedAt']) &&
         data.dbVersion is number && data.dbVersion >= 0 &&
         data.categories is list && data.categories.size() <= 100 &&
-        (data.categories.size() == 0 || data.categories[0] is string);
+        (data.categories.size() == 0 || data.categories[0] is string) &&
+        (!('notebookLmUrl' in data) || data.notebookLmUrl == null || (data.notebookLmUrl is string && data.notebookLmUrl.size() <= 1000));
+    }
+
+    function isValidLesson(data) {
+      return data.keys().hasAll(['id', 'category', 'title', 'order', 'legalBasis', 'content', 'keyTakeaways']) &&
+        data.keys().hasOnly(['id', 'category', 'title', 'order', 'legalBasis', 'content', 'keyTakeaways', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 120 &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 250 &&
+        data.order is number && data.order >= 0 && data.order <= 10000 &&
+        data.legalBasis is string && data.legalBasis.size() <= 300 &&
+        data.content is string && data.content.size() >= 1 && data.content.size() <= 50000 &&
+        data.keyTakeaways is string && data.keyTakeaways.size() <= 8000;
+    }
+
+    function isValidLegalAct(data) {
+      return data.keys().hasAll(['id', 'title', 'type', 'description', 'url', 'order']) &&
+        data.keys().hasOnly(['id', 'title', 'type', 'description', 'url', 'order', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 300 &&
+        (data.type == 'ustawa' || data.type == 'rozporzadzenie' || data.type == 'inne') &&
+        data.description is string && data.description.size() <= 600 &&
+        data.url is string && data.url.size() >= 1 && data.url.size() <= 1500 &&
+        data.order is number && data.order >= 0 && data.order <= 10000;
     }
 
     function isValidQuestion(data) {
       return data.keys().hasAll(['id', 'questionHash', 'category', 'question', 'options', 'correctAnswers', 'hasImagePlaceholder']) &&
-        data.keys().hasOnly(['id', 'questionHash', 'category', 'question', 'options', 'correctAnswers', 'imageBase64', 'hasImagePlaceholder', 'explanation', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'questionHash', 'category', 'licenseCategory', 'question', 'options', 'correctAnswers', 'imageBase64', 'hasImagePlaceholder', 'explanation', 'importBatchId', 'importBatchLabel', 'wrongCount', 'createdAt', 'updatedAt']) &&
         isValidId(data.id) &&
         data.questionHash is string && data.questionHash.size() > 0 && data.questionHash.size() <= 1000 &&
         data.category is string && data.category.size() > 0 && data.category.size() <= 120 &&
+        (!('licenseCategory' in data) || data.licenseCategory == null || data.licenseCategory in ['B', 'A', 'C', 'D', 'T', 'TRAM', 'ALL']) &&
         data.question is string && data.question.size() > 0 && data.question.size() <= 3000 &&
         data.options is list && data.options.size() >= 2 && data.options.size() <= 8 &&
         data.options[0] is string &&
         data.correctAnswers is list && data.correctAnswers.size() >= 1 && data.correctAnswers.size() <= 3 &&
         data.correctAnswers[0] is number &&
         data.hasImagePlaceholder is bool &&
-        (!('imageBase64' in data) || (data.imageBase64 is string && data.imageBase64.size() <= 300000)) &&
-        (!('explanation' in data) || (data.explanation is string && data.explanation.size() <= 4000));
+        (!('imageBase64' in data) || data.imageBase64 == null || (data.imageBase64 is string && data.imageBase64.size() <= 300000)) &&
+        (!('explanation' in data) || (data.explanation is string && data.explanation.size() <= 4000)) &&
+        (!('importBatchId' in data) || (data.importBatchId is string && data.importBatchId.size() <= 128)) &&
+        (!('importBatchLabel' in data) || (data.importBatchLabel is string && data.importBatchLabel.size() <= 200)) &&
+        (!('wrongCount' in data) || (data.wrongCount is number && data.wrongCount >= 0 && data.wrongCount <= 10000000));
     }
 
     function isValidComment(data) {
@@ -72,24 +100,28 @@ service cloud.firestore {
     }
 
     function isValidReport(data) {
-      return data.keys().hasAll(['questionId', 'questionSnippet', 'category', 'reporterUid', 'reporterNick', 'reason', 'status', 'createdAt']) &&
-        data.keys().hasOnly(['questionId', 'questionSnippet', 'category', 'reporterUid', 'reporterNick', 'reason', 'status', 'createdAt']) &&
+      return data.keys().hasAll(['questionId', 'questionText', 'category', 'userId', 'userNick', 'reason', 'status', 'adminReply', 'repliedAt', 'isReadByUser', 'createdAt']) &&
+        data.keys().hasOnly(['questionId', 'questionText', 'category', 'userId', 'userNick', 'reason', 'status', 'adminReply', 'repliedAt', 'isReadByUser', 'createdAt']) &&
         isValidId(data.questionId) &&
-        data.questionSnippet is string && data.questionSnippet.size() >= 1 && data.questionSnippet.size() <= 300 &&
+        data.questionText is string && data.questionText.size() >= 1 && data.questionText.size() <= 300 &&
         data.category is string && data.category.size() >= 1 && data.category.size() <= 120 &&
-        data.reporterUid is string && data.reporterUid.size() >= 1 && data.reporterUid.size() <= 128 &&
-        data.reporterNick is string && data.reporterNick.size() >= 1 && data.reporterNick.size() <= 60 &&
+        isValidId(data.userId) &&
+        data.userNick is string && data.userNick.size() >= 1 && data.userNick.size() <= 60 &&
         data.reason is string && data.reason.size() >= 2 && data.reason.size() <= 1000 &&
-        (data.status == 'open' || data.status == 'resolved');
+        (data.status == 'open' || data.status == 'resolved') &&
+        (data.adminReply == null || (data.adminReply is string && data.adminReply.size() <= 2000)) &&
+        (data.repliedAt == null || data.repliedAt is timestamp) &&
+        data.isReadByUser is bool;
     }
 
     function isValidUserProgress(data, userId) {
       return data.keys().hasAll(['uid', 'nick', 'email', 'masteredIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays']) &&
-        data.keys().hasOnly(['uid', 'nick', 'email', 'masteredIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays', 'lastStudyDate', 'examHistory', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'nick', 'email', 'masteredIds', 'completedLessonIds', 'mistakeStreaks', 'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect', 'points', 'streakDays', 'lastStudyDate', 'examHistory', 'unreadNotifications', 'updatedAt']) &&
         data.uid == userId &&
         data.nick is string && data.nick.size() >= 2 && data.nick.size() <= 60 &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 200 &&
         data.masteredIds is list && data.masteredIds.size() <= 10000 &&
+        (!('completedLessonIds' in data) || (data.completedLessonIds is list && data.completedLessonIds.size() <= 2000)) &&
         data.mistakeStreaks is map &&
         data.askLecturerIds is list && data.askLecturerIds.size() <= 5000 &&
         data.privateNotes is map &&
@@ -98,7 +130,8 @@ service cloud.firestore {
         data.points is number && data.points >= 0 &&
         data.streakDays is number && data.streakDays >= 0 &&
         (!('lastStudyDate' in data) || (data.lastStudyDate is string && data.lastStudyDate.size() <= 20)) &&
-        (!('examHistory' in data) || (data.examHistory is list && data.examHistory.size() <= 200));
+        (!('examHistory' in data) || (data.examHistory is list && data.examHistory.size() <= 200)) &&
+        (!('unreadNotifications' in data) || (data.unreadNotifications is number && data.unreadNotifications >= 0 && data.unreadNotifications <= 10000));
     }
 
     function isValidLeaderboardEntry(data, userId) {
@@ -114,42 +147,90 @@ service cloud.firestore {
 
     // --- KOLEKCJE ---
 
-    // 1. Metadane wersji bazy i kategorie
+    // 1. Metadane wersji bazy i kategorie (odczyt także dla gościa)
     match /system/metadata {
-      allow get: if isSignedIn();
+      allow get: if true;
       allow create, update: if isAdmin() && isValidSystemMetadata(incoming());
       allow delete: if false;
     }
 
-    // 2. Pytania egzaminacyjne
+    function isValidWrongCountIncrement() {
+      return isSignedIn() &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['wrongCount']) &&
+        incoming().wrongCount is number &&
+        (
+          ((!('wrongCount' in existing()) || existing().wrongCount == null) && incoming().wrongCount == 1) ||
+          (('wrongCount' in existing()) && existing().wrongCount is number && incoming().wrongCount == existing().wrongCount + 1)
+        );
+    }
+
+    // 2. Pytania egzaminacyjne (odczyt także dla gościa, zapis przez admina lub +1 wrongCount dla zalogowanych)
     match /questions/{questionId} {
-      allow get: if isSignedIn() && isValidId(questionId);
-      allow list: if isSignedIn();
+      allow get: if isValidId(questionId);
+      allow list: if true;
       allow create: if isAdmin() && isValidId(questionId) && isValidQuestion(incoming()) && incoming().id == questionId;
-      allow update: if isAdmin() && isValidId(questionId) && isValidQuestion(incoming()) && incoming().id == questionId;
+      allow update: if isValidId(questionId) && isValidQuestion(incoming()) && incoming().id == questionId && (
+        isAdmin() ||
+        isValidWrongCountIncrement()
+      );
       allow delete: if isAdmin() && isValidId(questionId);
     }
 
-    // 3. Wspólne komentarze kursantów pod pytaniami
-    match /comments/{commentId} {
-      allow get: if isSignedIn() && isValidId(commentId);
+    // 2b. Baza Wiedzy / Materiały (odczyt dla zalogowanych, edycja wyłącznie przez admina)
+    match /lessons/{lessonId} {
+      allow get: if isSignedIn() && isValidId(lessonId);
       allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().id == lessonId;
+      allow update: if isAdmin() && isValidId(lessonId) && isValidLesson(incoming()) && incoming().id == lessonId;
+      allow delete: if isAdmin() && isValidId(lessonId);
+    }
+
+    // 2c. Akty prawne / Dokumenty PDF (odczyt dla zalogowanych, edycja wyłącznie przez admina)
+    match /legalActs/{actId} {
+      allow get: if isSignedIn() && isValidId(actId);
+      allow list: if isSignedIn();
+      allow create: if isAdmin() && isValidId(actId) && isValidLegalAct(incoming()) && incoming().id == actId;
+      allow update: if isAdmin() && isValidId(actId) && isValidLegalAct(incoming()) && incoming().id == actId;
+      allow delete: if isAdmin() && isValidId(actId);
+    }
+
+    // 3. Wspólne komentarze kursantów pod pytaniami (odczyt także dla gościa, zapis tylko zalogowani)
+    match /comments/{commentId} {
+      allow get: if isValidId(commentId);
+      allow list: if true;
       allow create: if isSignedIn() && isValidId(commentId) && isValidComment(incoming());
       allow update: if false;
       allow delete: if isSignedIn() && isValidId(commentId) && (existing().authorUid == request.auth.uid || isAdmin());
     }
 
-    // 4. Zgłoszenia błędów w pytaniach
+    // 4. Zgłoszenia błędów w pytaniach i odpowiedzi administratora
     match /reports/{reportId} {
-      allow get: if isSignedIn() && isValidId(reportId);
-      allow list: if isSignedIn();
+      allow get: if isSignedIn() && isValidId(reportId) &&
+        (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() &&
+        (existing().userId == request.auth.uid || isAdmin());
       allow create: if isSignedIn() && isValidId(reportId) && isValidReport(incoming()) &&
-        incoming().reporterUid == request.auth.uid &&
+        incoming().userId == request.auth.uid &&
         incoming().status == 'open' &&
+        incoming().adminReply == null &&
+        incoming().repliedAt == null &&
+        incoming().isReadByUser == true &&
         incoming().createdAt == request.time;
-      allow update: if isAdmin() && isValidId(reportId) && isValidReport(incoming()) &&
-        incoming().reporterUid == existing().reporterUid &&
-        incoming().createdAt == existing().createdAt;
+      allow update: if isSignedIn() && isValidId(reportId) && isValidReport(incoming()) && (
+        (
+          isAdmin() &&
+          incoming().userId == existing().userId &&
+          incoming().questionId == existing().questionId &&
+          incoming().createdAt == existing().createdAt &&
+          (incoming().repliedAt == existing().repliedAt || incoming().repliedAt == request.time) &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'adminReply', 'repliedAt', 'isReadByUser'])
+        ) ||
+        (
+          existing().userId == request.auth.uid &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['isReadByUser']) &&
+          incoming().isReadByUser == true
+        )
+      );
       allow delete: if isAdmin() && isValidId(reportId);
     }
 
@@ -157,10 +238,25 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isValidId(userId) && isOwner(userId) && isValidUserProgress(incoming(), userId);
-      allow update: if isValidId(userId) && (isOwner(userId) || isAdmin()) &&
-        isValidUserProgress(incoming(), userId) &&
-        incoming().uid == existing().uid;
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUserProgress(incoming(), userId) &&
+        (!('unreadNotifications' in incoming()) || incoming().unreadNotifications == 0);
+      allow update: if isValidId(userId) && isValidUserProgress(incoming(), userId) &&
+        incoming().uid == existing().uid && (
+          (
+            isOwner(userId) &&
+            incoming().email == existing().email &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'nick', 'masteredIds', 'completedLessonIds', 'mistakeStreaks',
+              'askLecturerIds', 'privateNotes', 'totalAnswered', 'totalCorrect',
+              'points', 'streakDays', 'lastStudyDate', 'examHistory',
+              'unreadNotifications', 'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['unreadNotifications', 'updatedAt'])
+          )
+        );
       allow delete: if isValidId(userId) && isAdmin();
     }
 
