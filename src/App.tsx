@@ -392,6 +392,24 @@ export default function App() {
     setProgress((prev) => (prev ? { ...prev, unreadNotifications: 0 } : prev));
   }, []);
 
+  const handleProgressChange = useCallback(
+    (nextOrUpdater: UserProgress | ((prev: UserProgress) => UserProgress)) => {
+      setProgress((prev) => {
+        if (typeof nextOrUpdater === 'function') {
+          return prev ? nextOrUpdater(prev) : prev;
+        }
+        return {
+          ...nextOrUpdater,
+          unreadNotifications:
+            typeof nextOrUpdater.unreadNotifications === 'number'
+              ? nextOrUpdater.unreadNotifications
+              : (prev?.unreadNotifications ?? 0)
+        };
+      });
+    },
+    []
+  );
+
   // Ekran oczekiwania na sprawdzenie sesji
   if (!authReady) {
     return (
@@ -529,7 +547,7 @@ export default function App() {
                 categories={categories}
                 notebookLmUrl={notebookLmUrl}
                 progress={activeProgress}
-                onProgressChange={setProgress}
+                onProgressChange={handleProgressChange}
                 isGuest={guestModeActive}
                 isAdmin={isAdmin}
                 onRequireAuth={handleRequireAuth}
@@ -575,7 +593,7 @@ export default function App() {
                 groupWrongCounts={guestModeActive ? {} : groupWrongCounts}
                 onQuestionsWrong={handleIncrementWrongCounts}
                 progress={activeProgress}
-                onProgressChange={setProgress}
+                onProgressChange={handleProgressChange}
                 isAdmin={isAdmin}
                 isGuest={guestModeActive}
                 onRequireAuth={handleRequireAuth}
@@ -599,7 +617,7 @@ export default function App() {
                 progress={activeProgress}
                 isGuest={guestModeActive}
                 onRequireAuth={handleRequireAuth}
-                onProgressChange={setProgress}
+                onProgressChange={handleProgressChange}
                 onQuestionsWrong={handleIncrementWrongCounts}
                 onBackToDashboard={() => handleNavigate('dashboard')}
               />

@@ -34,6 +34,7 @@ import {
 } from '../lib/questionUtils';
 import {
   addCommentForQuestion,
+  computeAnswerProgress,
   deleteComment,
   fetchCommentsForQuestion,
   incrementQuestionsWrongCount,
@@ -62,7 +63,7 @@ interface StudyViewProps {
   groupWrongCounts?: Record<string, number>;
   onQuestionsWrong?: (questionIds: string[]) => void;
   progress: UserProgress;
-  onProgressChange: (next: UserProgress) => void;
+  onProgressChange: (next: UserProgress | ((prev: UserProgress) => UserProgress)) => void;
   isAdmin: boolean;
   isGuest: boolean;
   onRequireAuth: (mode: 'login' | 'register') => void;
@@ -94,6 +95,9 @@ export function StudyView({
 }: StudyViewProps) {
   const [studyQuickFilter, setStudyQuickFilter] = useState<StudyQuickFilter>('all');
   const [shuffleSeed, setShuffleSeed] = useState(0);
+  const [queueResetNonce, setQueueResetNonce] = useState(0);
+  const [repeatWholeCategory, setRepeatWholeCategory] = useState(false);
+  const [showCategoryCompleted, setShowCategoryCompleted] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOptions, setSelectedOptions] = useState<number[]>([]);
   const [checkedResult, setCheckedResult] = useState<{
@@ -101,6 +105,7 @@ export function StudyView({
     clearedFromMistakes: boolean;
   } | null>(null);
   const [submittingAnswer, setSubmittingAnswer] = useState(false);
+  const [saveProgressError, setSaveProgressError] = useState<string | null>(null);
 
   // Zamrożona kolejka dla bieżącej sesji (szczególnie ważne w trybie powtórki błędów,
   // żeby pytanie nie zniknęło z ekranu przed kliknięciem "Następne pytanie")
@@ -161,6 +166,12 @@ export function StudyView({
     };
   }, [baseStudyPool, progress.masteredIds]);
 
+  // Reset stanu powtarzania całej kategorii przy zmianie działu, kat. prawa jazdy lub trybu
+  useEffect(() => {
+    setRepeatWholeCategory(false);
+    setShowCategoryCompleted(false);
+  }, [mode, selectedCategory, selectedLicenseCategory, customQueue]);
+
   // Gdy otwieramy pytanie ze skrzynki powiadomień, upewniamy się, że szybki filtr nie ukrywa pytania
   useEffect(() => {
     if (focusQuestionId && studyQuickFilter !== 'all') {
@@ -168,33 +179,57 @@ export function StudyView({
     }
   }, [focusQuestionId, studyQuickFilter]);
 
-  // Budowanie puli pytań przy zmianie trybu, kategorii, filtra lub tasowaniu
+  function shuffleArray<T>(arr: T[]): T[] {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
+  }
+
+  // Budowanie puli pytań przy zmianie trybu, kategorii, filtra lub tasowaniu:
+  // W Trybie Nauki najpierw ustawiamy pytania jeszcze nieopanowane, a opanowane na końcu kolejki.
   useEffect(() => {
-    let pool: Question[] = [];
+    const masteredSet = new Set(progress.masteredIds);
+    let ids: string[] = [];
+
     if (mode === 'study') {
-      const masteredSet = new Set(progress.masteredIds);
       if (studyQuickFilter === 'unmastered') {
-        pool = baseStudyPool.filter((q) => !masteredSet.has(q.id));
+        const unmasteredIds = baseStudyPool
+          .filter((q) => !masteredSet.has(q.id))
+          .map((q) => q.id);
+        ids = shuffleSeed > 0 ? shuffleArray(unmasteredIds) : unmasteredIds;
       } else if (studyQuickFilter === 'with_image') {
-        pool = baseStudyPool.filter((q) => Boolean(q.imageBase64));
+        const withImg = baseStudyPool.filter((q) => Boolean(q.imageBase64));
+        const unmasteredImg = withImg.filter((q) => !masteredSet.has(q.id)).map((q) => q.id);
+        const masteredImg = withImg.filter((q) => masteredSet.has(q.id)).map((q) => q.id);
+        ids =
+          shuffleSeed > 0
+            ? [...shuffleArray(unmasteredImg), ...shuffleArray(masteredImg)]
+            : [...unmasteredImg, ...masteredImg];
       } else {
-        pool = baseStudyPool;
+        const unmasteredIds = baseStudyPool
+          .filter((q) => !masteredSet.has(q.id))
+          .map((q) => q.id);
+        const masteredIds = baseStudyPool
+          .filter((q) => masteredSet.has(q.id))
+          .map((q) => q.id);
+        ids =
+          shuffleSeed > 0
+            ? [...shuffleArray(unmasteredIds), ...shuffleArray(masteredIds)]
+            : [...unmasteredIds, ...masteredIds];
       }
     } else if (mode === 'mistakes') {
       const mistakeIds = new Set(Object.keys(progress.mistakeStreaks));
-      pool = questions.filter((q) => mistakeIds.has(q.id));
+      const rawIds = questions.filter((q) => mistakeIds.has(q.id)).map((q) => q.id);
+      ids = shuffleSeed > 0 ? shuffleArray(rawIds) : rawIds;
     } else {
       const lecturerIds = new Set(progress.askLecturerIds);
-      pool = questions.filter((q) => lecturerIds.has(q.id));
+      const rawIds = questions.filter((q) => lecturerIds.has(q.id)).map((q) => q.id);
+      ids = shuffleSeed > 0 ? shuffleArray(rawIds) : rawIds;
     }
 
-    const ids = pool.map((q) => q.id);
-    if (shuffleSeed > 0) {
-      for (let i = ids.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [ids[i], ids[j]] = [ids[j], ids[i]];
-      }
-    }
     setSessionIds(ids);
     if (focusQuestionId) {
       const targetIdx = ids.indexOf(focusQuestionId);
@@ -207,9 +242,10 @@ export function StudyView({
     }
     setSelectedOptions([]);
     setCheckedResult(null);
+    setSaveProgressError(null);
     // Celowo nie resetujemy sesji przy każdej zmianie progress, aby pytanie po rozwiązaniu nie zniknęło nagle z ekranu
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, baseStudyPool, studyQuickFilter, shuffleSeed, questions]);
+  }, [mode, baseStudyPool, studyQuickFilter, shuffleSeed, queueResetNonce, questions]);
 
   // Obsługa skoku do pytania ze skrzynki, gdy użytkownik jest już w trybie Nauki
   useEffect(() => {
@@ -273,20 +309,28 @@ export function StudyView({
     }
 
     setSubmittingAnswer(true);
+    setSaveProgressError(null);
     const hadMistakeBefore = activeQuestion.id in progress.mistakeStreaks;
+    const optimisticUpdated = computeAnswerProgress(progress, activeQuestion.id, isCorrect);
+    const clearedFromMistakes =
+      hadMistakeBefore && isCorrect && !(activeQuestion.id in optimisticUpdated.mistakeStreaks);
+
+    // Natychmiast aktualizujemy stan React w App, aby powrót na Pulpit od razu pokazał świeży postęp
+    onProgressChange((prev) => computeAnswerProgress(prev, activeQuestion.id, isCorrect));
+    setCheckedResult({ isCorrect, clearedFromMistakes });
+
+    if (!isCorrect) {
+      void incrementQuestionsWrongCount([activeQuestion.id]);
+      onQuestionsWrong?.([activeQuestion.id]);
+    }
 
     try {
-      const updated = await recordAnswerProgress(progress, activeQuestion.id, isCorrect);
-      onProgressChange(updated);
-      if (!isCorrect) {
-        void incrementQuestionsWrongCount([activeQuestion.id]);
-        onQuestionsWrong?.([activeQuestion.id]);
-      }
-      const clearedFromMistakes =
-        hadMistakeBefore && isCorrect && !(activeQuestion.id in updated.mistakeStreaks);
-      setCheckedResult({ isCorrect, clearedFromMistakes });
+      await recordAnswerProgress(optimisticUpdated);
     } catch (err) {
-      console.error('Nie udało się zapisać postępu:', err);
+      console.error('Nie udało się zapisać postępu (masteredIds) w Firestore:', err);
+      setSaveProgressError(
+        'Uwaga: nie udało się zapisać opanowania pytania w Firestore. Sprawdź połączenie lub reguły firestore.rules (szczegóły w konsoli).'
+      );
     } finally {
       setSubmittingAnswer(false);
     }
@@ -297,6 +341,20 @@ export function StudyView({
     setCurrentIndex(nextIdx);
     setSelectedOptions([]);
     setCheckedResult(null);
+    setSaveProgressError(null);
+  }
+
+  function handleRepeatWholeCategory() {
+    setShowCategoryCompleted(false);
+    setRepeatWholeCategory(true);
+    if (studyQuickFilter === 'unmastered') {
+      setStudyQuickFilter('all');
+    }
+    setCurrentIndex(0);
+    setSelectedOptions([]);
+    setCheckedResult(null);
+    setSaveProgressError(null);
+    setQueueResetNonce((n) => n + 1);
   }
 
   async function handleToggleLecturer() {
@@ -345,6 +403,7 @@ export function StudyView({
   }
 
   function handleReloadModeQueue() {
+    setShowCategoryCompleted(false);
     setShuffleSeed((s) => s + 1);
   }
 
@@ -551,8 +610,53 @@ export function StudyView({
         </div>
       )}
 
-      {/* Pusty stan dla wybranego trybu */}
-      {!activeQuestion ? (
+      {/* Pusty stan / ekran gratulacyjny po opanowaniu wszystkich pytań w kategorii */}
+      {(showCategoryCompleted ||
+        (!isGuest &&
+          mode === 'study' &&
+          !customQueue &&
+          !focusQuestionId &&
+          studyQuickFilter !== 'with_image' &&
+          !repeatWholeCategory &&
+          !checkedResult &&
+          quickFilterCounts.all > 0 &&
+          quickFilterCounts.unmastered === 0)) ? (
+        <div className="rounded-xl border border-emerald-200 bg-white p-10 text-center dark:border-emerald-900/60 dark:bg-slate-900">
+          <CheckCircle2 className="mx-auto h-11 w-11 text-emerald-600 dark:text-emerald-400" />
+          <h2 className="font-display mt-3 text-xl font-bold text-slate-900 dark:text-white">
+            Gratulacje! Wszystkie pytania w tej kategorii zostały opanowane
+          </h2>
+          <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+            Zaliczyłeś poprawnie wszystkie pytania (
+            <span className="font-mono font-semibold text-emerald-700 tabular-nums dark:text-emerald-400">
+              {quickFilterCounts.all}/{quickFilterCounts.all}
+            </span>
+            ) w dziale{' '}
+            <strong>
+              {selectedCategory === ALL_CATEGORIES_KEY ? ALL_CATEGORIES_LABEL : selectedCategory}
+            </strong>
+            . Możesz wrócić na Pulpit albo powtórzyć całą kategorię od początku.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={handleRepeatWholeCategory}
+              className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-lg bg-blue-700 px-5 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+            >
+              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+              <span>Powtórz całą kategorię od nowa</span>
+            </button>
+            <button
+              type="button"
+              onClick={onBackToDashboard}
+              className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              <span>Wróć na pulpit</span>
+            </button>
+          </div>
+        </div>
+      ) : !activeQuestion ? (
         <div className="rounded-xl border border-slate-200 bg-white p-10 text-center dark:border-slate-800 dark:bg-slate-900">
           {mode === 'mistakes' ? (
             <>
@@ -589,10 +693,18 @@ export function StudyView({
               </p>
               <button
                 type="button"
-                onClick={() => setStudyQuickFilter('all')}
+                onClick={() => {
+                  if (studyQuickFilter === 'unmastered') {
+                    handleRepeatWholeCategory();
+                  } else {
+                    setStudyQuickFilter('all');
+                  }
+                }}
                 className="mt-5 cursor-pointer rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
               >
-                Pokaż wszystkie pytania
+                {studyQuickFilter === 'unmastered'
+                  ? 'Powtórz całą kategorię od nowa'
+                  : 'Pokaż wszystkie pytania'}
               </button>
             </>
           ) : (
@@ -618,7 +730,7 @@ export function StudyView({
           {/* Główna karta pytania */}
           <div className="space-y-5 lg:col-span-8">
             <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 dark:border-slate-800 dark:bg-slate-900">
-              {/* Metadane pytania (bez pigułek) */}
+              {/* Metadane pytania + plakietka Opanowane */}
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3 text-xs text-slate-500 dark:border-slate-800 dark:text-slate-400">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono font-semibold text-slate-800 tabular-nums dark:text-slate-200">
@@ -646,11 +758,19 @@ export function StudyView({
                   )}
                 </div>
 
-                {currentMistakeStreak !== undefined && (
-                  <span className="font-mono font-semibold text-amber-700 tabular-nums dark:text-amber-400">
-                    Powtórka błędów: {currentMistakeStreak}/{MISTAKE_CLEAR_STREAK} z rzędu
-                  </span>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {!isGuest && progress.masteredIds.includes(activeQuestion.id) && (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">
+                      <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Opanowane</span>
+                    </span>
+                  )}
+                  {currentMistakeStreak !== undefined && (
+                    <span className="font-mono font-semibold text-amber-700 tabular-nums dark:text-amber-400">
+                      Powtórka błędów: {currentMistakeStreak}/{MISTAKE_CLEAR_STREAK} z rzędu
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* Treść pytania */}
@@ -876,6 +996,21 @@ export function StudyView({
                       {submittingAnswer && <Loader2 className="h-4 w-4 animate-spin" />}
                       <span>Sprawdź odpowiedź</span>
                     </button>
+                  ) : !isGuest &&
+                    mode === 'study' &&
+                    !customQueue &&
+                    studyQuickFilter !== 'with_image' &&
+                    !repeatWholeCategory &&
+                    quickFilterCounts.all > 0 &&
+                    quickFilterCounts.unmastered === 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowCategoryCompleted(true)}
+                      className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 dark:bg-emerald-600"
+                    >
+                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                      <span>Zakończ kategorię</span>
+                    </button>
                   ) : currentIndex < sessionIds.length - 1 ? (
                     <button
                       type="button"
@@ -892,11 +1027,22 @@ export function StudyView({
                       className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-emerald-700 px-4 text-sm font-semibold text-white hover:bg-emerald-800 dark:bg-emerald-600"
                     >
                       <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                      <span>Zacznij pulę od nowa</span>
+                      <span>
+                        {mode === 'study' ? 'Powtórz całą kategorię od nowa' : 'Zacznij pulę od nowa'}
+                      </span>
                     </button>
                   )}
                 </div>
               </div>
+
+              {saveProgressError && (
+                <div
+                  role="alert"
+                  className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-xs font-medium text-red-800 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+                >
+                  {saveProgressError}
+                </div>
+              )}
 
               {guestReportNotice && (
                 <div

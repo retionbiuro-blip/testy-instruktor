@@ -689,51 +689,66 @@ export async function clearUserUnreadNotifications(uid: string): Promise<void> {
   }
 }
 
-async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> {
-  const userRef = doc(db, 'users', progress.uid);
-  const leaderboardRef = doc(db, 'leaderboard', progress.uid);
+function buildFullUserPayload(progress: UserProgress): Record<string, unknown> {
+  const safeNick = progress.nick.trim().slice(0, 60);
+  return {
+    uid: progress.uid,
+    nick: safeNick.length >= 2 ? safeNick : 'Kursant',
+    email: progress.email,
+    masteredIds: progress.masteredIds.slice(0, 10000),
+    completedLessonIds: (progress.completedLessonIds ?? []).slice(0, 2000),
+    mistakeStreaks: progress.mistakeStreaks,
+    askLecturerIds: progress.askLecturerIds.slice(0, 5000),
+    privateNotes: progress.privateNotes,
+    savedOutlines: sanitizeSavedOutlines(progress.savedOutlines),
+    totalAnswered: progress.totalAnswered,
+    totalCorrect: progress.totalCorrect,
+    points: progress.points,
+    streakDays: progress.streakDays,
+    lastStudyDate: progress.lastStudyDate ?? '',
+    examHistory: (progress.examHistory ?? []).slice(-100),
+    updatedAt: serverTimestamp()
+  };
+}
 
+async function persistLeaderboardEntry(progress: UserProgress): Promise<void> {
+  const leaderboardRef = doc(db, 'leaderboard', progress.uid);
   const accuracy =
     progress.totalAnswered > 0
       ? Math.round((progress.totalCorrect / progress.totalAnswered) * 100)
       : 0;
+  const safeNick = progress.nick.trim().slice(0, 60);
 
   try {
     await setDoc(
-      userRef,
+      leaderboardRef,
       {
         uid: progress.uid,
-        nick: progress.nick,
-        email: progress.email,
-        masteredIds: progress.masteredIds.slice(0, 10000),
-        completedLessonIds: (progress.completedLessonIds ?? []).slice(0, 2000),
-        mistakeStreaks: progress.mistakeStreaks,
-        askLecturerIds: progress.askLecturerIds.slice(0, 5000),
-        privateNotes: progress.privateNotes,
-        savedOutlines: sanitizeSavedOutlines(progress.savedOutlines),
-        totalAnswered: progress.totalAnswered,
-        totalCorrect: progress.totalCorrect,
+        nick: safeNick.length >= 2 ? safeNick : 'Kursant',
+        masteredCount: progress.masteredIds.length,
         points: progress.points,
         streakDays: progress.streakDays,
-        lastStudyDate: progress.lastStudyDate ?? '',
-        examHistory: (progress.examHistory ?? []).slice(-100),
+        accuracy,
         updatedAt: serverTimestamp()
       },
       { merge: true }
     );
-
-    await setDoc(leaderboardRef, {
-      uid: progress.uid,
-      nick: progress.nick,
-      masteredCount: progress.masteredIds.length,
-      points: progress.points,
-      streakDays: progress.streakDays,
-      accuracy,
-      updatedAt: serverTimestamp()
-    });
   } catch (error) {
+    console.error(`Błąd zapisu rankingu w Firestore (leaderboard/${progress.uid}):`, error);
+  }
+}
+
+async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> {
+  const userRef = doc(db, 'users', progress.uid);
+
+  try {
+    await setDoc(userRef, buildFullUserPayload(progress), { merge: true });
+  } catch (error) {
+    console.error(`Błąd zapisu dokumentu użytkownika w Firestore (users/${progress.uid}):`, error);
     handleFirestoreError(error, OperationType.WRITE, `users/${progress.uid}`);
   }
+
+  await persistLeaderboardEntry(progress);
 }
 
 export function computeNextStreak(currentStreak: number, lastStudyDate?: string): {
@@ -751,11 +766,11 @@ export function computeNextStreak(currentStreak: number, lastStudyDate?: string)
   return { streakDays: 1, lastStudyDate: today };
 }
 
-export async function recordAnswerProgress(
+export function computeAnswerProgress(
   current: UserProgress,
   questionId: string,
   isCorrect: boolean
-): Promise<UserProgress> {
+): UserProgress {
   const masteredSet = new Set(current.masteredIds);
   const nextMistakeStreaks = { ...current.mistakeStreaks };
   let earnedPoints = 0;
@@ -781,7 +796,7 @@ export async function recordAnswerProgress(
 
   const streakUpdate = computeNextStreak(current.streakDays, current.lastStudyDate);
 
-  const updated: UserProgress = {
+  return {
     ...current,
     masteredIds: Array.from(masteredSet),
     mistakeStreaks: nextMistakeStreaks,
@@ -791,8 +806,48 @@ export async function recordAnswerProgress(
     streakDays: streakUpdate.streakDays,
     lastStudyDate: streakUpdate.lastStudyDate
   };
+}
 
-  await persistUserAndLeaderboard(updated);
+export async function recordAnswerProgress(
+  currentOrUpdated: UserProgress,
+  questionId?: string,
+  isCorrect?: boolean
+): Promise<UserProgress> {
+  const updated =
+    typeof questionId === 'string' && typeof isCorrect === 'boolean'
+      ? computeAnswerProgress(currentOrUpdated, questionId, isCorrect)
+      : currentOrUpdated;
+
+  const userRef = doc(db, 'users', updated.uid);
+  const answerPatch = {
+    masteredIds: updated.masteredIds.slice(0, 10000),
+    mistakeStreaks: updated.mistakeStreaks,
+    totalAnswered: updated.totalAnswered,
+    totalCorrect: updated.totalCorrect,
+    points: updated.points,
+    streakDays: updated.streakDays,
+    lastStudyDate: updated.lastStudyDate ?? '',
+    updatedAt: serverTimestamp()
+  };
+
+  try {
+    await setDoc(userRef, answerPatch, { merge: true });
+  } catch (error) {
+    console.error(`Błąd zapisu masteredIds/postępu w Firestore (users/${updated.uid}):`, error);
+    try {
+      const existingSnap = await getDoc(userRef);
+      if (!existingSnap.exists()) {
+        await setDoc(userRef, buildFullUserPayload(updated), { merge: true });
+      } else {
+        handleFirestoreError(error, OperationType.UPDATE, `users/${updated.uid}`);
+      }
+    } catch (retryError) {
+      console.error(`Ponowna próba zapisu w Firestore (users/${updated.uid}) nie powiodła się:`, retryError);
+      handleFirestoreError(retryError, OperationType.WRITE, `users/${updated.uid}`);
+    }
+  }
+
+  await persistLeaderboardEntry(updated);
   return updated;
 }
 
