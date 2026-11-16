@@ -9,14 +9,17 @@ import { KnowledgeBaseView } from './components/KnowledgeBaseView';
 import { LeaderboardView } from './components/LeaderboardView';
 import { LegalActsView } from './components/LegalActsView';
 import { Navbar } from './components/Navbar';
+import { OfflineIndicator } from './components/PWAInstallButton';
 import { StudyView } from './components/StudyView';
+import { UserInboxModal } from './components/UserInboxModal';
 import { ADMIN_EMAIL, ALL_CATEGORIES_KEY, DEFAULT_CATEGORIES } from './config';
 import { auth, testFirestoreConnection } from './lib/firebase';
-import { getStoredTheme, setStoredTheme } from './lib/indexedDb';
+import { getStoredTheme, saveQuestionsToCache, setStoredTheme } from './lib/indexedDb';
 import {
   fetchLeaderboard,
   fetchReports,
   loadOrCreateUserProgress,
+  subscribeToUserUnreadNotifications,
   syncLegalActsWithCache,
   syncLessonsWithCache,
   syncQuestionsWithCache
@@ -26,6 +29,7 @@ import {
   LeaderboardEntry,
   LegalAct,
   Lesson,
+  LicenseCategoryFilter,
   Question,
   ReportItem,
   UserProgress
@@ -57,6 +61,7 @@ export default function App() {
 
   const [currentView, setCurrentView] = useState<AppView>('dashboard');
   const [selectedCategory, setSelectedCategory] = useState<string>(ALL_CATEGORIES_KEY);
+  const [selectedLicenseCategory, setSelectedLicenseCategory] = useState<LicenseCategoryFilter>('B');
   const [adminInitialTab, setAdminInitialTab] = useState<'import' | 'lessons' | 'legal-acts' | undefined>(
     undefined
   );
@@ -75,6 +80,12 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [loadingLeaderboard, setLoadingLeaderboard] = useState(false);
   const [appError, setAppError] = useState<string | null>(null);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [focusedQuestionId, setFocusedQuestionId] = useState<string | null>(null);
+  const [customStudyQueue, setCustomStudyQueue] = useState<{
+    title: string;
+    questionIds: string[];
+  } | null>(null);
 
   // Synchronizacja klasy .dark na elemencie <html>
   useEffect(() => {
@@ -179,6 +190,19 @@ export default function App() {
     }
   }, [authReady, authUser, isGuest, isAdmin, pendingNick, bootstrapAppData, bootstrapGuestData]);
 
+  // Nasłuch licznika nieprzeczytanych odpowiedzi admina w czasie rzeczywistym
+  useEffect(() => {
+    if (!authReady || !authUser) return;
+    const unsubscribe = subscribeToUserUnreadNotifications(authUser.uid, (count) => {
+      setProgress((prev) =>
+        prev && prev.unreadNotifications !== count
+          ? { ...prev, unreadNotifications: count }
+          : prev
+      );
+    });
+    return () => unsubscribe();
+  }, [authReady, authUser]);
+
   const handleRefreshSync = useCallback(async () => {
     if ((!authUser && !isGuest) || syncing) return;
     setSyncing(true);
@@ -248,10 +272,35 @@ export default function App() {
       if (cat !== undefined) {
         setSelectedCategory(cat);
       }
+      setCustomStudyQueue(null);
       handleNavigate(view);
     },
     [handleNavigate]
   );
+
+  const handlePracticeTop20 = useCallback(
+    (questionIds: string[]) => {
+      if (questionIds.length === 0) return;
+      setCustomStudyQueue({
+        title: 'Top 20 najtrudniejszych pytań grupy',
+        questionIds
+      });
+      handleNavigate('study');
+    },
+    [handleNavigate]
+  );
+
+  const handleIncrementWrongCounts = useCallback((questionIds: string[]) => {
+    if (questionIds.length === 0) return;
+    const wrongSet = new Set(questionIds);
+    setQuestions((prev) => {
+      const next = prev.map((q) =>
+        wrongSet.has(q.id) ? { ...q, wrongCount: (q.wrongCount ?? 0) + 1 } : q
+      );
+      void saveQuestionsToCache(next);
+      return next;
+    });
+  }, []);
 
   const handleRequireAuth = useCallback((mode: 'login' | 'register') => {
     setAuthInitialMode(mode);
@@ -261,7 +310,26 @@ export default function App() {
   const handleLogout = useCallback(async () => {
     setPendingNick(undefined);
     setIsGuest(false);
+    setInboxOpen(false);
+    setFocusedQuestionId(null);
+    setCustomStudyQueue(null);
     await signOut(auth);
+  }, []);
+
+  const handleOpenQuestionFromInbox = useCallback(
+    (questionId: string) => {
+      const target = questions.find((q) => q.id === questionId);
+      setInboxOpen(false);
+      setCustomStudyQueue(null);
+      setSelectedCategory(target ? target.category : ALL_CATEGORIES_KEY);
+      setFocusedQuestionId(questionId);
+      handleNavigate('study');
+    },
+    [questions, handleNavigate]
+  );
+
+  const handleUnreadCleared = useCallback(() => {
+    setProgress((prev) => (prev ? { ...prev, unreadNotifications: 0 } : prev));
   }, []);
 
   // Ekran oczekiwania na sprawdzenie sesji
@@ -296,6 +364,7 @@ export default function App() {
   const activeProgress = guestModeActive ? GUEST_PROGRESS : progress;
   const mistakesCount = activeProgress ? Object.keys(activeProgress.mistakeStreaks).length : 0;
   const openReportsCount = reports.filter((r) => r.status === 'open').length;
+  const unreadNotifications = guestModeActive ? 0 : (activeProgress?.unreadNotifications ?? 0);
 
   return (
     <div className="min-h-screen bg-slate-50 pb-20 text-slate-900 md:pb-10 dark:bg-slate-950 dark:text-slate-100">
@@ -309,6 +378,8 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onLogout={handleLogout}
         onSwitchToAuth={() => handleRequireAuth('login')}
+        onOpenInbox={() => setInboxOpen(true)}
+        unreadNotifications={unreadNotifications}
         mistakesCount={mistakesCount}
         openReportsCount={openReportsCount}
       />
@@ -372,7 +443,10 @@ export default function App() {
                 leaderboard={leaderboard}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
+                selectedLicenseCategory={selectedLicenseCategory}
+                onSelectLicenseCategory={setSelectedLicenseCategory}
                 onStartMode={handleStartMode}
+                onPracticeTop20={handlePracticeTop20}
                 isAdmin={isAdmin}
                 isGuest={guestModeActive}
                 onRequireAuth={handleRequireAuth}
@@ -424,6 +498,13 @@ export default function App() {
                 categories={categories}
                 selectedCategory={selectedCategory}
                 onSelectCategory={setSelectedCategory}
+                selectedLicenseCategory={selectedLicenseCategory}
+                onSelectLicenseCategory={setSelectedLicenseCategory}
+                focusQuestionId={focusedQuestionId}
+                onFocusQuestionConsumed={() => setFocusedQuestionId(null)}
+                customQueue={currentView === 'study' ? customStudyQueue : null}
+                onClearCustomQueue={() => setCustomStudyQueue(null)}
+                onQuestionsWrong={handleIncrementWrongCounts}
                 progress={activeProgress}
                 onProgressChange={setProgress}
                 isAdmin={isAdmin}
@@ -439,10 +520,13 @@ export default function App() {
                 questions={questions}
                 categories={categories}
                 defaultCategory={selectedCategory}
+                selectedLicenseCategory={selectedLicenseCategory}
+                onSelectLicenseCategory={setSelectedLicenseCategory}
                 progress={activeProgress}
                 isGuest={guestModeActive}
                 onRequireAuth={handleRequireAuth}
                 onProgressChange={setProgress}
+                onQuestionsWrong={handleIncrementWrongCounts}
                 onBackToDashboard={() => handleNavigate('dashboard')}
               />
             )}
@@ -492,6 +576,18 @@ export default function App() {
           </>
         )}
       </main>
+
+      {inboxOpen && !guestModeActive && activeProgress && (
+        <UserInboxModal
+          userId={activeProgress.uid}
+          unreadCount={unreadNotifications}
+          onUnreadCleared={handleUnreadCleared}
+          onOpenQuestion={handleOpenQuestionFromInbox}
+          onClose={() => setInboxOpen(false)}
+        />
+      )}
+
+      <OfflineIndicator />
     </div>
   );
 }

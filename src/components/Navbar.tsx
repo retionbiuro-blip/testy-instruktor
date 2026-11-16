@@ -1,5 +1,6 @@
-import { LogIn, LogOut, Moon, ShieldCheck, Sun } from 'lucide-react';
+import { Bell, LogIn, LogOut, Moon, ShieldCheck, Sun } from 'lucide-react';
 import { AppView } from '../types';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface NavbarProps {
   currentView: AppView;
@@ -11,6 +12,8 @@ interface NavbarProps {
   onToggleTheme: () => void;
   onLogout: () => void;
   onSwitchToAuth: () => void;
+  onOpenInbox: () => void;
+  unreadNotifications: number;
   mistakesCount: number;
   openReportsCount: number;
 }
@@ -25,6 +28,8 @@ export function Navbar({
   onToggleTheme,
   onLogout,
   onSwitchToAuth,
+  onOpenInbox,
+  unreadNotifications,
   mistakesCount,
   openReportsCount
 }: NavbarProps) {
@@ -101,11 +106,32 @@ export function Navbar({
             })}
           </nav>
 
-          {/* Strefa 3: Główna akcja i przełącznik motywu */}
-          <div className="flex shrink-0 items-center gap-3">
+          {/* Strefa 3: Główna akcja, instalacja PWA, skrzynka powiadomień i przełącznik motywu */}
+          <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
             <span className="hidden max-w-[140px] truncate text-sm font-medium text-slate-700 sm:inline dark:text-slate-300">
               {isGuest ? 'Gość' : nick}
             </span>
+            <PWAInstallButton />
+            {!isGuest && (
+              <button
+                type="button"
+                onClick={onOpenInbox}
+                aria-label={
+                  unreadNotifications > 0
+                    ? `Moje zgłoszenia i odpowiedzi (nowe powiadomienia: ${unreadNotifications})`
+                    : 'Moje zgłoszenia i odpowiedzi'
+                }
+                title="Moje zgłoszenia i odpowiedzi"
+                className="relative flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <Bell className="h-4 w-4" aria-hidden="true" />
+                {unreadNotifications > 0 && (
+                  <span className="font-mono absolute -top-1.5 -right-1.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-600 px-1 text-[11px] font-bold text-white tabular-nums shadow-xs">
+                    {unreadNotifications > 99 ? '99+' : unreadNotifications}
+                  </span>
+                )}
+              </button>
+            )}
             <button
               type="button"
               onClick={onToggleTheme}

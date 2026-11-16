@@ -1,4 +1,102 @@
-import { ParsedQuestionInput, Question } from '../types';
+import { LicenseCategory, LicenseCategoryFilter, ParsedQuestionInput, Question } from '../types';
+
+export const LICENSE_CATEGORY_OPTIONS: {
+  value: LicenseCategory;
+  shortLabel: string;
+  label: string;
+}[] = [
+  { value: 'B', shortLabel: 'Kat. B', label: 'Kat. B (domyślna)' },
+  { value: 'A', shortLabel: 'Kat. A', label: 'Kat. A (motocykle / motorowery)' },
+  { value: 'C', shortLabel: 'Kat. C', label: 'Kat. C (samochody ciężarowe)' },
+  { value: 'D', shortLabel: 'Kat. D', label: 'Kat. D (autobusy)' },
+  { value: 'T', shortLabel: 'Kat. T', label: 'Kat. T (ciągniki rolnicze)' },
+  { value: 'TRAM', shortLabel: 'Tramwaj', label: 'Tramwaj (TRAM)' },
+  { value: 'ALL', shortLabel: 'Wspólne (ALL)', label: 'Wspólne — ALL (np. dydaktyka, psychologia)' }
+];
+
+const VALID_LICENSE_CATEGORIES = new Set<string>(['B', 'A', 'C', 'D', 'T', 'TRAM', 'ALL']);
+
+export function normalizeLicenseCategory(val: unknown): LicenseCategory | undefined {
+  if (typeof val !== 'string') return undefined;
+  const upper = val.trim().toUpperCase();
+  if (VALID_LICENSE_CATEGORIES.has(upper)) {
+    return upper as LicenseCategory;
+  }
+  return undefined;
+}
+
+export function formatLicenseCategoryLabel(val?: LicenseCategory): string {
+  switch (val) {
+    case 'A':
+      return 'Kat. A';
+    case 'C':
+      return 'Kat. C';
+    case 'D':
+      return 'Kat. D';
+    case 'T':
+      return 'Kat. T';
+    case 'TRAM':
+      return 'Tramwaj';
+    case 'ALL':
+      return 'Wspólne (ALL)';
+    case 'B':
+    default:
+      return 'Kat. B';
+  }
+}
+
+export function matchesLicenseCategory(q: Question, filter: LicenseCategoryFilter): boolean {
+  if (filter === 'ALL_LICENSES') return true;
+  const lc = q.licenseCategory;
+  if (filter === 'B') {
+    return !lc || lc === 'B' || lc === 'ALL';
+  }
+  return lc === filter || lc === 'ALL';
+}
+
+const LICENSE_KEYWORD_RULES: {
+  category: LicenseCategory;
+  pattern: RegExp;
+}[] = [
+  {
+    category: 'TRAM',
+    pattern: /tramwaj[a-ząćęłńóśźż]*/i
+  },
+  {
+    category: 'T',
+    pattern: /ciągnik[a-ząćęłńóśźż]*|\bkat\.?\s*t(?![a-ząćęłńóśźż0-9])/i
+  },
+  {
+    category: 'D',
+    pattern: /autobus[a-ząćęłńóśźż]*|trolejbus[a-ząćęłńóśźż]*|\bkat\.?\s*d1?(?![a-ząćęłńóśźż0-9])/i
+  },
+  {
+    category: 'C',
+    pattern:
+      /ciężarow[a-ząćęłńóśźż]*|tachograf[a-ząćęłńóśźż]*|naczep[a-ząćęłńóśźż]*|\bkat\.?\s*c1?(?![a-ząćęłńóśźż0-9])/i
+  },
+  {
+    category: 'A',
+    pattern:
+      /motocykl[a-ząćęłńóśźż]*|motorower[a-ząćęłńóśźż]*|\bkat\.?\s*(?:am|a1|a2|a)(?![a-ząćęłńóśźż0-9])/i
+  }
+];
+
+export function detectSuggestedLicenseCategory(
+  q: Question
+): { suggested: LicenseCategory; matchedKeyword: string } | null {
+  const haystack = `${q.question} ${q.options.join(' ')}`;
+  for (const rule of LICENSE_KEYWORD_RULES) {
+    const match = rule.pattern.exec(haystack);
+    if (match) {
+      return {
+        suggested: rule.category,
+        matchedKeyword: match[0]
+      };
+    }
+  }
+  return null;
+}
 
 function normalizeHashPart(text: string): string {
   return text
@@ -296,9 +394,11 @@ export function parseImportedQuestionsJson(
     const imageBase64 = typeof row.imageBase64 === 'string' && row.imageBase64.startsWith('data:image/')
       ? row.imageBase64
       : undefined;
+    const licenseCategory = normalizeLicenseCategory(row.licenseCategory ?? row.kategoriaPrawaJazdy);
 
     const builtItem: ParsedQuestionInput = {
       category: categoryRaw.slice(0, 120),
+      ...(licenseCategory ? { licenseCategory } : {}),
       question: rawQuestion.slice(0, 3000),
       options,
       correctAnswers: normalizedCorrect.sort((a, b) => a - b),

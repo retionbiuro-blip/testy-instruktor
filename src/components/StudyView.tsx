@@ -7,6 +7,8 @@ import {
   CheckCircle2,
   Flag,
   HelpCircle,
+  Image as ImageIcon,
+  ListFilter,
   Loader2,
   Lock,
   MessageSquare,
@@ -15,6 +17,8 @@ import {
   Shuffle,
   StickyNote,
   Trash2,
+  TrendingUp,
+  X,
   XCircle
 } from 'lucide-react';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
@@ -23,17 +27,25 @@ import {
   ALL_CATEGORIES_LABEL,
   MISTAKE_CLEAR_STREAK
 } from '../config';
-import { areAnswerSetsEqual } from '../lib/questionUtils';
+import {
+  areAnswerSetsEqual,
+  formatLicenseCategoryLabel,
+  matchesLicenseCategory
+} from '../lib/questionUtils';
 import {
   addCommentForQuestion,
   deleteComment,
   fetchCommentsForQuestion,
+  incrementQuestionsWrongCount,
   recordAnswerProgress,
   savePrivateNote,
   toggleAskLecturer
 } from '../services/firestoreService';
-import { CommentItem, Question, UserProgress } from '../types';
+import { CommentItem, LicenseCategoryFilter, Question, UserProgress } from '../types';
+import { LicenseCategorySwitcher } from './LicenseCategorySwitcher';
 import { ReportModal } from './ReportModal';
+
+type StudyQuickFilter = 'all' | 'unmastered' | 'with_image';
 
 interface StudyViewProps {
   mode: 'study' | 'mistakes' | 'lecturer';
@@ -41,6 +53,13 @@ interface StudyViewProps {
   categories: string[];
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
+  selectedLicenseCategory: LicenseCategoryFilter;
+  onSelectLicenseCategory: (lc: LicenseCategoryFilter) => void;
+  focusQuestionId?: string | null;
+  onFocusQuestionConsumed?: () => void;
+  customQueue?: { title: string; questionIds: string[] } | null;
+  onClearCustomQueue?: () => void;
+  onQuestionsWrong?: (questionIds: string[]) => void;
   progress: UserProgress;
   onProgressChange: (next: UserProgress) => void;
   isAdmin: boolean;
@@ -57,6 +76,13 @@ export function StudyView({
   categories,
   selectedCategory,
   onSelectCategory,
+  selectedLicenseCategory,
+  onSelectLicenseCategory,
+  focusQuestionId,
+  onFocusQuestionConsumed,
+  customQueue,
+  onClearCustomQueue,
+  onQuestionsWrong,
   progress,
   onProgressChange,
   isAdmin,
@@ -64,6 +90,7 @@ export function StudyView({
   onRequireAuth,
   onBackToDashboard
 }: StudyViewProps) {
+  const [studyQuickFilter, setStudyQuickFilter] = useState<StudyQuickFilter>('all');
   const [shuffleSeed, setShuffleSeed] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOptions, setSelectedOptions] = useState<number[]>([]);
@@ -91,6 +118,7 @@ export function StudyView({
   // Zgłaszanie błędu
   const [reportModalOpen, setReportModalOpen] = useState(false);
   const [reportSuccessToast, setReportSuccessToast] = useState(false);
+  const [guestReportNotice, setGuestReportNotice] = useState(false);
 
   const questionsById = useMemo(() => {
     const map = new Map<string, Question>();
@@ -102,14 +130,54 @@ export function StudyView({
     return Array.from(new Set([...categories, ...questions.map((q) => q.category)])).filter(Boolean);
   }, [categories, questions]);
 
-  // Budowanie puli pytań przy zmianie trybu, kategorii lub tasowaniu
+  const baseStudyPool = useMemo(() => {
+    if (customQueue && customQueue.questionIds.length > 0) {
+      return customQueue.questionIds
+        .map((id) => questionsById.get(id))
+        .filter((q): q is Question => Boolean(q));
+    }
+    const licensePool = questions.filter((q) =>
+      matchesLicenseCategory(q, selectedLicenseCategory)
+    );
+    return selectedCategory === ALL_CATEGORIES_KEY
+      ? licensePool
+      : licensePool.filter((q) => q.category === selectedCategory);
+  }, [customQueue, questionsById, questions, selectedLicenseCategory, selectedCategory]);
+
+  const quickFilterCounts = useMemo(() => {
+    const masteredSet = new Set(progress.masteredIds);
+    let unmastered = 0;
+    let withImage = 0;
+    for (const q of baseStudyPool) {
+      if (!masteredSet.has(q.id)) unmastered++;
+      if (q.imageBase64) withImage++;
+    }
+    return {
+      all: baseStudyPool.length,
+      unmastered,
+      withImage
+    };
+  }, [baseStudyPool, progress.masteredIds]);
+
+  // Gdy otwieramy pytanie ze skrzynki powiadomień, upewniamy się, że szybki filtr nie ukrywa pytania
+  useEffect(() => {
+    if (focusQuestionId && studyQuickFilter !== 'all') {
+      setStudyQuickFilter('all');
+    }
+  }, [focusQuestionId, studyQuickFilter]);
+
+  // Budowanie puli pytań przy zmianie trybu, kategorii, filtra lub tasowaniu
   useEffect(() => {
     let pool: Question[] = [];
     if (mode === 'study') {
-      pool =
-        selectedCategory === ALL_CATEGORIES_KEY
-          ? questions
-          : questions.filter((q) => q.category === selectedCategory);
+      const masteredSet = new Set(progress.masteredIds);
+      if (studyQuickFilter === 'unmastered') {
+        pool = baseStudyPool.filter((q) => !masteredSet.has(q.id));
+      } else if (studyQuickFilter === 'with_image') {
+        pool = baseStudyPool.filter((q) => Boolean(q.imageBase64));
+      } else {
+        pool = baseStudyPool;
+      }
     } else if (mode === 'mistakes') {
       const mistakeIds = new Set(Object.keys(progress.mistakeStreaks));
       pool = questions.filter((q) => mistakeIds.has(q.id));
@@ -126,12 +194,32 @@ export function StudyView({
       }
     }
     setSessionIds(ids);
-    setCurrentIndex(0);
+    if (focusQuestionId) {
+      const targetIdx = ids.indexOf(focusQuestionId);
+      setCurrentIndex(targetIdx >= 0 ? targetIdx : 0);
+      if (targetIdx >= 0) {
+        onFocusQuestionConsumed?.();
+      }
+    } else {
+      setCurrentIndex(0);
+    }
     setSelectedOptions([]);
     setCheckedResult(null);
     // Celowo nie resetujemy sesji przy każdej zmianie progress, aby pytanie po rozwiązaniu nie zniknęło nagle z ekranu
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, selectedCategory, shuffleSeed, questions]);
+  }, [mode, baseStudyPool, studyQuickFilter, shuffleSeed, questions]);
+
+  // Obsługa skoku do pytania ze skrzynki, gdy użytkownik jest już w trybie Nauki
+  useEffect(() => {
+    if (!focusQuestionId || sessionIds.length === 0) return;
+    const idx = sessionIds.indexOf(focusQuestionId);
+    if (idx >= 0) {
+      setCurrentIndex(idx);
+      setSelectedOptions([]);
+      setCheckedResult(null);
+      onFocusQuestionConsumed?.();
+    }
+  }, [focusQuestionId, sessionIds, onFocusQuestionConsumed]);
 
   const activeQuestion: Question | null = useMemo(() => {
     if (sessionIds.length === 0) return null;
@@ -145,6 +233,7 @@ export function StudyView({
     setPrivateNoteDraft(progress.privateNotes[activeQuestion.id] ?? '');
     setNoteSavedMsg(false);
     setReportSuccessToast(false);
+    setGuestReportNotice(false);
 
     let cancelled = false;
     setLoadingComments(true);
@@ -187,6 +276,10 @@ export function StudyView({
     try {
       const updated = await recordAnswerProgress(progress, activeQuestion.id, isCorrect);
       onProgressChange(updated);
+      if (!isCorrect) {
+        void incrementQuestionsWrongCount([activeQuestion.id]);
+        onQuestionsWrong?.([activeQuestion.id]);
+      }
       const clearedFromMistakes =
         hadMistakeBefore && isCorrect && !(activeQuestion.id in updated.mistakeStreaks);
       setCheckedResult({ isCorrect, clearedFromMistakes });
@@ -335,19 +428,33 @@ export function StudyView({
 
         <div className="flex flex-wrap items-center gap-2.5">
           {mode === 'study' && (
-            <select
-              aria-label="Wybierz kategorię nauki"
-              value={selectedCategory}
-              onChange={(e) => onSelectCategory(e.target.value)}
-              className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-            >
-              <option value={ALL_CATEGORIES_KEY}>{ALL_CATEGORIES_LABEL}</option>
-              {allCategoryNames.map((cat) => (
-                <option key={cat} value={cat}>
-                  {cat}
-                </option>
-              ))}
-            </select>
+            <>
+              <LicenseCategorySwitcher
+                questions={questions}
+                value={selectedLicenseCategory}
+                onChange={(lc) => {
+                  if (customQueue) onClearCustomQueue?.();
+                  onSelectLicenseCategory(lc);
+                }}
+                compact
+              />
+              <select
+                aria-label="Wybierz kategorię nauki"
+                value={selectedCategory}
+                onChange={(e) => {
+                  if (customQueue) onClearCustomQueue?.();
+                  onSelectCategory(e.target.value);
+                }}
+                className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-sm font-medium text-slate-800 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+              >
+                <option value={ALL_CATEGORIES_KEY}>{ALL_CATEGORIES_LABEL}</option>
+                {allCategoryNames.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+            </>
           )}
 
           <button
@@ -360,6 +467,87 @@ export function StudyView({
           </button>
         </div>
       </div>
+
+      {/* Baner niestandardowej puli (np. Top 20 najtrudniejszych) oraz szybki filtr pytań w Trybie Nauki */}
+      {mode === 'study' && (
+        <div className="space-y-3">
+          {customQueue && customQueue.questionIds.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50/80 px-4 py-2.5 text-xs text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/35 dark:text-amber-200">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
+                <span>
+                  Ćwiczysz zestaw: <strong>{customQueue.title}</strong> ({customQueue.questionIds.length} pytań)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => onClearCustomQueue?.()}
+                className="flex cursor-pointer items-center gap-1 rounded-md border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-slate-900 dark:text-amber-200 dark:hover:bg-amber-950"
+              >
+                <X className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Wróć do pełnej puli działów</span>
+              </button>
+            </div>
+          )}
+
+          <div
+            role="group"
+            aria-label="Szybkie filtrowanie pytań w Trybie Nauki"
+            className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-900"
+          >
+            <span className="mr-1 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400">
+              <ListFilter className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Filtr:</span>
+            </span>
+
+            <button
+              type="button"
+              onClick={() => setStudyQuickFilter('all')}
+              className={`flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                studyQuickFilter === 'all'
+                  ? 'border-blue-600 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <span>Wszystkie pytania</span>
+              <span className="font-mono text-[11px] opacity-80 tabular-nums">
+                ({quickFilterCounts.all})
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setStudyQuickFilter('unmastered')}
+              className={`flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                studyQuickFilter === 'unmastered'
+                  ? 'border-blue-600 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <span>Tylko nierozwiązane / nieopanowane</span>
+              <span className="font-mono text-[11px] opacity-80 tabular-nums">
+                ({quickFilterCounts.unmastered})
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setStudyQuickFilter('with_image')}
+              className={`flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border px-3 text-xs font-semibold transition-colors ${
+                studyQuickFilter === 'with_image'
+                  ? 'border-blue-600 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/50 dark:text-blue-300'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <ImageIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Tylko z ilustracją</span>
+              <span className="font-mono text-[11px] opacity-80 tabular-nums">
+                ({quickFilterCounts.withImage})
+              </span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Pusty stan dla wybranego trybu */}
       {!activeQuestion ? (
@@ -384,6 +572,27 @@ export function StudyView({
                 Podczas nauki kliknij „Trafione fartem / Zapytaj wykładowcy” przy dowolnym pytaniu, aby zapisać je tutaj na zajęcia.
               </p>
             </>
+          ) : studyQuickFilter !== 'all' && quickFilterCounts.all > 0 ? (
+            <>
+              <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-600 dark:text-emerald-400" />
+              <h2 className="font-display mt-3 text-lg font-bold text-slate-900 dark:text-white">
+                {studyQuickFilter === 'unmastered'
+                  ? 'Wszystkie pytania w tym dziale są już opanowane'
+                  : 'Brak pytań z ilustracją w tej puli'}
+              </h2>
+              <p className="mx-auto mt-1 max-w-md text-sm text-slate-600 dark:text-slate-400">
+                {studyQuickFilter === 'unmastered'
+                  ? 'Świetna robota! Możesz wrócić do widoku wszystkich pytań lub wybrać inny dział.'
+                  : 'W aktualnie wybranej kategorii żadne pytanie nie ma dołączonego obrazka.'}
+              </p>
+              <button
+                type="button"
+                onClick={() => setStudyQuickFilter('all')}
+                className="mt-5 cursor-pointer rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
+              >
+                Pokaż wszystkie pytania
+              </button>
+            </>
           ) : (
             <>
               <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
@@ -397,7 +606,7 @@ export function StudyView({
           <button
             type="button"
             onClick={onBackToDashboard}
-            className="mt-5 cursor-pointer rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600"
+            className="mt-5 ml-2 cursor-pointer rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
           >
             Wróć do pulpitu
           </button>
@@ -414,6 +623,10 @@ export function StudyView({
                     Pytanie {currentIndex + 1} z {sessionIds.length}
                   </span>
                   <span aria-hidden="true">·</span>
+                  <span className="font-medium text-slate-700 dark:text-slate-300">
+                    {formatLicenseCategoryLabel(activeQuestion.licenseCategory)}
+                  </span>
+                  <span aria-hidden="true">·</span>
                   <span className="font-medium text-blue-700 dark:text-blue-400">
                     {activeQuestion.category}
                   </span>
@@ -421,6 +634,14 @@ export function StudyView({
                   <span>
                     Wielokrotny wybór (poprawnych: {activeQuestion.correctAnswers.length})
                   </span>
+                  {(activeQuestion.wrongCount ?? 0) > 0 && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span className="font-mono text-amber-700 tabular-nums dark:text-amber-400">
+                        Błędów w grupie: {activeQuestion.wrongCount}
+                      </span>
+                    </>
+                  )}
                 </div>
 
                 {currentMistakeStreak !== undefined && (
@@ -576,17 +797,27 @@ export function StudyView({
               <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 dark:border-slate-800">
                 <div className="flex flex-wrap items-center gap-2">
                   {isGuest ? (
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                      <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                      <span>Zapis pytań dla wykładowcy i zgłaszanie błędów po zalogowaniu.</span>
+                    <>
                       <button
                         type="button"
-                        onClick={() => onRequireAuth('login')}
-                        className="cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                        onClick={() => setGuestReportNotice(true)}
+                        className="flex h-10 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
                       >
-                        Zaloguj się
+                        <Flag className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Zgłoś błąd w pytaniu</span>
                       </button>
-                    </div>
+                      <span className="hidden items-center gap-1 text-xs text-slate-500 sm:inline-flex dark:text-slate-400">
+                        <Lock className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Funkcje konta po</span>
+                        <button
+                          type="button"
+                          onClick={() => onRequireAuth('login')}
+                          className="cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                        >
+                          zalogowaniu
+                        </button>
+                      </span>
+                    </>
                   ) : (
                     <>
                       <button
@@ -665,9 +896,27 @@ export function StudyView({
                 </div>
               </div>
 
+              {guestReportNotice && (
+                <div
+                  role="alert"
+                  className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+                >
+                  <span>
+                    Zgłaszanie uwag wymaga zalogowania na konto (dzięki temu otrzymasz powiadomienie o odpowiedzi administratora).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onRequireAuth('login')}
+                    className="cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                  >
+                    Zaloguj się →
+                  </button>
+                </div>
+              )}
+
               {reportSuccessToast && (
                 <p className="mt-3 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                  Dziękujemy! Zgłoszenie zostało wysłane do administratora.
+                  Dziękujemy! Zgłoszenie zostało wysłane do administratora. Gdy odpowie, otrzymasz powiadomienie w skrzynce.
                 </p>
               )}
             </div>

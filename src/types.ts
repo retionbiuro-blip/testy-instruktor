@@ -1,12 +1,18 @@
+export type LicenseCategory = 'B' | 'A' | 'C' | 'D' | 'T' | 'TRAM' | 'ALL';
+
+export type LicenseCategoryFilter = 'B' | 'A' | 'C' | 'D' | 'T' | 'TRAM' | 'ALL_LICENSES';
+
 export interface Question {
   id: string;
   questionHash: string;
   category: string;
+  licenseCategory?: LicenseCategory;
   question: string;
   options: string[];
   correctAnswers: number[]; // Indeksy od 0 (np. [0] lub [0, 2])
   imageBase64?: string;
   hasImagePlaceholder: boolean;
+  wrongCount?: number;
   explanation?: string;
   importBatchId?: string;
   importBatchLabel?: string;
@@ -58,12 +64,15 @@ export interface CommentItem {
 export interface ReportItem {
   id: string;
   questionId: string;
-  questionSnippet: string;
+  questionText: string;
   category: string;
-  reporterUid: string;
-  reporterNick: string;
+  userId: string;
+  userNick: string;
   reason: string;
   status: 'open' | 'resolved';
+  adminReply: string | null;
+  repliedAt: Date | null;
+  isReadByUser: boolean;
   createdAt: Date | null;
 }
 
@@ -94,6 +103,7 @@ export interface UserProgress {
   streakDays: number;
   lastStudyDate?: string; // YYYY-MM-DD
   examHistory?: ExamHistoryItem[];
+  unreadNotifications?: number;
   updatedAt?: unknown;
 }
 
@@ -121,6 +131,7 @@ export type AppView =
 
 export interface ParsedQuestionInput {
   category: string;
+  licenseCategory?: LicenseCategory;
   question: string;
   options: string[];
   correctAnswers: number[];

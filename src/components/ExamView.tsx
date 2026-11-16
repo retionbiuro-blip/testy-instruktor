@@ -19,9 +19,14 @@ import {
   QUICK10_DURATION_SECONDS,
   QUICK10_QUESTION_COUNT
 } from '../config';
-import { areAnswerSetsEqual } from '../lib/questionUtils';
-import { saveExamCompletion } from '../services/firestoreService';
-import { ExamHistoryItem, Question, UserProgress } from '../types';
+import {
+  areAnswerSetsEqual,
+  formatLicenseCategoryLabel,
+  matchesLicenseCategory
+} from '../lib/questionUtils';
+import { incrementQuestionsWrongCount, saveExamCompletion } from '../services/firestoreService';
+import { ExamHistoryItem, LicenseCategoryFilter, Question, UserProgress } from '../types';
+import { LicenseCategorySwitcher } from './LicenseCategorySwitcher';
 import { ReportModal } from './ReportModal';
 
 interface ExamViewProps {
@@ -29,10 +34,13 @@ interface ExamViewProps {
   questions: Question[];
   categories: string[];
   defaultCategory: string;
+  selectedLicenseCategory: LicenseCategoryFilter;
+  onSelectLicenseCategory: (lc: LicenseCategoryFilter) => void;
   progress: UserProgress;
   isGuest: boolean;
   onRequireAuth: (mode: 'login' | 'register') => void;
   onProgressChange: (next: UserProgress) => void;
+  onQuestionsWrong?: (questionIds: string[]) => void;
   onBackToDashboard: () => void;
 }
 
@@ -59,10 +67,13 @@ export function ExamView({
   questions,
   categories,
   defaultCategory,
+  selectedLicenseCategory,
+  onSelectLicenseCategory,
   progress,
   isGuest,
   onRequireAuth,
   onProgressChange,
+  onQuestionsWrong,
   onBackToDashboard
 }: ExamViewProps) {
   const [stage, setStage] = useState<'setup' | 'running' | 'results'>(
@@ -81,6 +92,15 @@ export function ExamView({
   const [reportTarget, setReportTarget] = useState<Question | null>(null);
   const [reportSuccessId, setReportSuccessId] = useState<string | null>(null);
 
+  const licenseFilteredQuestions = useMemo(() => {
+    return questions.filter((q) => matchesLicenseCategory(q, selectedLicenseCategory));
+  }, [questions, selectedLicenseCategory]);
+
+  const activeLicenseLabel =
+    selectedLicenseCategory === 'ALL_LICENSES'
+      ? 'Wszystkie kat.'
+      : formatLicenseCategoryLabel(selectedLicenseCategory);
+
   const allCategoryNames = useMemo(() => {
     return Array.from(new Set([...categories, ...questions.map((q) => q.category)])).filter(Boolean);
   }, [categories, questions]);
@@ -89,8 +109,8 @@ export function ExamView({
     (testMode: 'exam' | 'quick10', cat: string, count: number) => {
       const pool =
         cat === ALL_CATEGORIES_KEY
-          ? questions
-          : questions.filter((q) => q.category === cat);
+          ? licenseFilteredQuestions
+          : licenseFilteredQuestions.filter((q) => q.category === cat);
 
       const picked = pickRandomQuestions(pool, count);
       setExamQuestions(picked);
@@ -102,7 +122,7 @@ export function ExamView({
       setReviewFilter('wrong');
       setStage('running');
     },
-    [questions]
+    [licenseFilteredQuestions]
   );
 
   // Automatyczny start w trybie Szybka 10-tka
@@ -141,8 +161,9 @@ export function ExamView({
     const historyItem: ExamHistoryItem = {
       id: `ex_${Date.now()}`,
       mode,
-      category:
-        chosenCategory === ALL_CATEGORIES_KEY ? ALL_CATEGORIES_LABEL : chosenCategory,
+      category: `${activeLicenseLabel} · ${
+        chosenCategory === ALL_CATEGORIES_KEY ? ALL_CATEGORIES_LABEL : chosenCategory
+      }`,
       score,
       total,
       percent,
@@ -151,6 +172,10 @@ export function ExamView({
     };
 
     try {
+      if (mistakeIds.length > 0) {
+        void incrementQuestionsWrongCount(mistakeIds);
+        onQuestionsWrong?.(mistakeIds);
+      }
       const updated = await saveExamCompletion(
         progress,
         historyItem,
@@ -161,7 +186,18 @@ export function ExamView({
     } catch (err) {
       console.error('Nie udało się zapisać wyniku egzaminu:', err);
     }
-  }, [stage, isGuest, examQuestions, answersMap, mode, chosenCategory, progress, onProgressChange]);
+  }, [
+    stage,
+    isGuest,
+    examQuestions,
+    answersMap,
+    mode,
+    activeLicenseLabel,
+    chosenCategory,
+    progress,
+    onProgressChange,
+    onQuestionsWrong
+  ]);
 
   // Odliczanie czasu podczas testu
   useEffect(() => {
@@ -193,8 +229,8 @@ export function ExamView({
   if (stage === 'setup') {
     const availableCount =
       chosenCategory === ALL_CATEGORIES_KEY
-        ? questions.length
-        : questions.filter((q) => q.category === chosenCategory).length;
+        ? licenseFilteredQuestions.length
+        : licenseFilteredQuestions.filter((q) => q.category === chosenCategory).length;
 
     return (
       <div className="mx-auto max-w-2xl space-y-6">
@@ -211,6 +247,12 @@ export function ExamView({
             Symulacja Egzaminu
           </h1>
         </div>
+
+        <LicenseCategorySwitcher
+          questions={questions}
+          value={selectedLicenseCategory}
+          onChange={onSelectLicenseCategory}
+        />
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-6 dark:border-slate-800 dark:bg-slate-900">
           <div className="grid grid-cols-3 gap-4 border-b border-slate-100 pb-5 text-center dark:border-slate-800">
@@ -239,7 +281,7 @@ export function ExamView({
               htmlFor="exam-category"
               className="mb-2 block text-sm font-semibold text-slate-800 dark:text-slate-200"
             >
-              Zakres materiału
+              Zakres materiału ({activeLicenseLabel})
             </label>
             <select
               id="exam-category"
@@ -248,10 +290,10 @@ export function ExamView({
               className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
             >
               <option value={ALL_CATEGORIES_KEY}>
-                {ALL_CATEGORIES_LABEL} ({questions.length} pytań)
+                {ALL_CATEGORIES_LABEL} ({licenseFilteredQuestions.length} pytań)
               </option>
               {allCategoryNames.map((cat) => {
-                const count = questions.filter((q) => q.category === cat).length;
+                const count = licenseFilteredQuestions.filter((q) => q.category === cat).length;
                 return (
                   <option key={cat} value={cat}>
                     {cat} ({count} pytań)
@@ -503,16 +545,20 @@ export function ExamView({
                         )}
                         {isCorrect ? 'Poprawna' : 'Błędna'}
                       </span>
-                      {!isGuest && (
-                        <button
-                          type="button"
-                          onClick={() => setReportTarget(q)}
-                          className="flex cursor-pointer items-center gap-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
-                        >
-                          <Flag className="h-3.5 w-3.5" aria-hidden="true" />
-                          <span>Zgłoś błąd</span>
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isGuest) {
+                            setReportSuccessId(`__GUEST_NOTICE__${q.id}`);
+                          } else {
+                            setReportTarget(q);
+                          }
+                        }}
+                        className="flex cursor-pointer items-center gap-1 text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
+                      >
+                        <Flag className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Zgłoś błąd</span>
+                      </button>
                     </div>
                   </div>
 
@@ -570,9 +616,25 @@ export function ExamView({
                     </p>
                   )}
 
+                  {reportSuccessId === `__GUEST_NOTICE__${q.id}` && (
+                    <div
+                      role="alert"
+                      className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200"
+                    >
+                      <span>Zgłaszanie uwag wymaga zalogowania na konto.</span>
+                      <button
+                        type="button"
+                        onClick={() => onRequireAuth('login')}
+                        className="cursor-pointer font-semibold text-blue-700 hover:underline dark:text-blue-400"
+                      >
+                        Zaloguj się →
+                      </button>
+                    </div>
+                  )}
+
                   {reportSuccessId === q.id && (
                     <p className="mt-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                      Zgłoszenie zostało zapisane.
+                      Zgłoszenie zostało zapisane. Gdy administrator odpowie, zobaczysz powiadomienie w skrzynce.
                     </p>
                   )}
                 </article>
@@ -610,7 +672,7 @@ export function ExamView({
           ) : null}
           <div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              {mode === 'quick10' ? 'Szybka 10-tka' : 'Symulacja Egzaminu'} · Odpowiedziano{' '}
+              {mode === 'quick10' ? 'Szybka 10-tka' : 'Symulacja Egzaminu'} · {activeLicenseLabel} · Odpowiedziano{' '}
               <span className="font-mono tabular-nums">
                 {answeredCount}/{examQuestions.length}
               </span>
@@ -647,7 +709,7 @@ export function ExamView({
         {/* Karta aktywnego pytania */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 sm:p-6 lg:col-span-8 dark:border-slate-800 dark:bg-slate-900">
           <p className="text-xs font-medium text-blue-700 dark:text-blue-400">
-            {activeQ.category} · Zaznacz wszystkie poprawne odpowiedzi
+            {formatLicenseCategoryLabel(activeQ.licenseCategory)} · {activeQ.category} · Zaznacz wszystkie poprawne odpowiedzi
           </p>
           <h2 className="font-display mt-2 text-lg leading-snug font-semibold text-slate-900 sm:text-xl dark:text-white">
             {activeQ.question}

@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Car,
   Check,
   CheckCircle2,
   Download,
@@ -16,6 +17,7 @@ import {
   Plus,
   RotateCcw,
   Search,
+  Send,
   Sparkles,
   Trash2,
   Upload,
@@ -31,9 +33,11 @@ import {
   setLocalDbVersion
 } from '../lib/indexedDb';
 import {
+  LICENSE_CATEGORY_OPTIONS,
   SAMPLE_QUESTIONS_JSON,
   compressImageToBase64,
   computeQuestionHash,
+  formatLicenseCategoryLabel,
   generateQuestionId,
   parseImportedQuestionsJson
 } from '../lib/questionUtils';
@@ -42,16 +46,19 @@ import {
   batchClearQuestionImages,
   batchDeleteQuestions,
   batchImportQuestions,
+  batchUpdateQuestionsLicenseCategory,
   deleteAdminQuestion,
   deleteReport,
+  replyToReport,
   saveAdminQuestion,
   saveCategoriesList,
   updateReportStatus
 } from '../services/firestoreService';
-import { LegalAct, Lesson, ParsedQuestionInput, Question, ReportItem } from '../types';
+import { LegalAct, Lesson, LicenseCategory, ParsedQuestionInput, Question, ReportItem } from '../types';
 import { AdminLegalActsTab } from './AdminLegalActsTab';
 import { AdminMaterialsTab } from './AdminMaterialsTab';
 import { BulkImageMatcher } from './BulkImageMatcher';
+import { LicenseCategorySieve } from './LicenseCategorySieve';
 
 interface AdminPanelProps {
   questions: Question[];
@@ -94,6 +101,7 @@ export function AdminPanel({
     if (initialTab) {
       setActiveTab(initialTab);
       setBulkMatchMode(false);
+      setSieveMode(false);
     }
   }, [initialTab]);
 
@@ -127,8 +135,12 @@ export function AdminPanel({
 
   // --- STAN ZAKŁADKI 2: ZARZĄDZANIE PYTANIAMI, MASOWA EDYCJA I OBRAZKI ---
   const [bulkMatchMode, setBulkMatchMode] = useState(false);
+  const [sieveMode, setSieveMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterCategory, setFilterCategory] = useState('__ALL__');
+  const [filterLicenseCategory, setFilterLicenseCategory] = useState<'__ALL__' | LicenseCategory>(
+    '__ALL__'
+  );
   const [onlyImagePlaceholder, setOnlyImagePlaceholder] = useState(false);
   const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([]);
   const [showAllFiltered, setShowAllFiltered] = useState(false);
@@ -141,6 +153,8 @@ export function AdminPanel({
     categories[0] ?? 'Ogólne / Mix'
   );
   const [bulkTargetCustomCategory, setBulkTargetCustomCategory] = useState('');
+  const [bulkLicenseModalOpen, setBulkLicenseModalOpen] = useState(false);
+  const [bulkTargetLicenseCategory, setBulkTargetLicenseCategory] = useState<LicenseCategory>('B');
   const [lastBulkImageBatch, setLastBulkImageBatch] = useState<LastBulkImageBatch | null>(() =>
     getLastBulkImageBatch()
   );
@@ -167,6 +181,13 @@ export function AdminPanel({
 
   // --- STAN ZAKŁADKI 4: ZGŁOSZENIA ---
   const [reportFilter, setReportFilter] = useState<'open' | 'resolved' | 'all'>('open');
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [sendingReplyId, setSendingReplyId] = useState<string | null>(null);
+  const [replyFeedback, setReplyFeedback] = useState<{
+    reportId: string;
+    type: 'ok' | 'err';
+    text: string;
+  } | null>(null);
 
   const existingHashes = useMemo(() => {
     const set = new Set<string>();
@@ -396,6 +417,7 @@ export function AdminPanel({
       id: generateQuestionId(0),
       questionHash: '',
       category: allCategoryNames[0] ?? 'Prawo o ruchu drogowym',
+      licenseCategory: 'B',
       question: '',
       options: ['', '', ''],
       correctAnswers: [0],
@@ -575,6 +597,44 @@ export function AdminPanel({
     onReportsUpdated(reports.filter((r) => r.id !== reportId));
   }
 
+  async function handleReplyToReport(r: ReportItem) {
+    const draft = (replyDrafts[r.id] ?? '').trim();
+    if (!draft || sendingReplyId) return;
+    setSendingReplyId(r.id);
+    setReplyFeedback(null);
+    try {
+      await replyToReport(r, draft);
+      const now = new Date();
+      onReportsUpdated(
+        reports.map((item) =>
+          item.id === r.id
+            ? {
+                ...item,
+                adminReply: draft,
+                status: 'resolved',
+                isReadByUser: false,
+                repliedAt: now
+              }
+            : item
+        )
+      );
+      setReplyDrafts((prev) => ({ ...prev, [r.id]: '' }));
+      setReplyFeedback({
+        reportId: r.id,
+        type: 'ok',
+        text: 'Wysłano odpowiedź kursantowi i oznaczono zgłoszenie jako załatwione.'
+      });
+    } catch (err) {
+      setReplyFeedback({
+        reportId: r.id,
+        type: 'err',
+        text: err instanceof Error ? err.message : 'Nie udało się wysłać odpowiedzi.'
+      });
+    } finally {
+      setSendingReplyId(null);
+    }
+  }
+
   // --- MASOWE OPERACJE NA ZAZNACZONYCH PYTANIACH, PACZKACH IMPORTU I OBRAZKACH ---
   async function executeBulkClearImages(targetIds: string[], clearUndoStorage = false) {
     if (targetIds.length === 0 || bulkActionProcessing) return;
@@ -683,6 +743,42 @@ export function AdminPanel({
     }
   }
 
+  async function handleBulkChangeLicenseCategorySubmit(e: FormEvent) {
+    e.preventDefault();
+    if (selectedQuestionIds.length === 0 || bulkActionProcessing) return;
+
+    setBulkActionProcessing(true);
+    setBulkErrorMessage(null);
+    setBulkStatusMessage(null);
+    try {
+      const updates = selectedQuestionIds.map((questionId) => ({
+        questionId,
+        licenseCategory: bulkTargetLicenseCategory
+      }));
+      const nextVersion = await batchUpdateQuestionsLicenseCategory(updates);
+      const idSet = new Set(selectedQuestionIds);
+      const nextList = questions.map((q) =>
+        idSet.has(q.id) ? { ...q, licenseCategory: bulkTargetLicenseCategory } : q
+      );
+      await saveQuestionsToCache(nextList);
+      setLocalDbVersion(nextVersion);
+      onQuestionsUpdated(nextList, allCategoryNames, nextVersion);
+      setSelectedQuestionIds([]);
+      setBulkLicenseModalOpen(false);
+      setBulkStatusMessage(
+        `Zmieniono kategorię prawa jazdy na „${formatLicenseCategoryLabel(
+          bulkTargetLicenseCategory
+        )}” w ${idSet.size} pytaniach. Wersja bazy: ${nextVersion}.`
+      );
+    } catch (err) {
+      setBulkErrorMessage(
+        err instanceof Error ? err.message : 'Nie udało się zmienić kategorii prawa jazdy.'
+      );
+    } finally {
+      setBulkActionProcessing(false);
+    }
+  }
+
   function requestUndoLastBulkImages() {
     if (undoableBulkImageIds.length === 0) return;
     setConfirmModal({
@@ -704,6 +800,10 @@ export function AdminPanel({
         return false;
       }
       if (filterCategory !== '__ALL__' && q.category !== filterCategory) return false;
+      if (filterLicenseCategory !== '__ALL__') {
+        const effectiveLc = q.licenseCategory ?? 'B';
+        if (effectiveLc !== filterLicenseCategory) return false;
+      }
       if (qLower) {
         return (
           q.question.toLowerCase().includes(qLower) ||
@@ -713,7 +813,7 @@ export function AdminPanel({
       }
       return true;
     });
-  }, [questions, searchQuery, filterCategory, onlyImagePlaceholder]);
+  }, [questions, searchQuery, filterCategory, filterLicenseCategory, onlyImagePlaceholder]);
 
   const visibleQuestions = useMemo(
     () => (showAllFiltered ? filteredQuestions : filteredQuestions.slice(0, 100)),
@@ -766,6 +866,7 @@ export function AdminPanel({
             onClick={() => {
               setActiveTab('import');
               setBulkMatchMode(false);
+              setSieveMode(false);
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'import'
@@ -791,6 +892,7 @@ export function AdminPanel({
             onClick={() => {
               setActiveTab('categories');
               setBulkMatchMode(false);
+              setSieveMode(false);
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'categories'
@@ -805,6 +907,7 @@ export function AdminPanel({
             onClick={() => {
               setActiveTab('lessons');
               setBulkMatchMode(false);
+              setSieveMode(false);
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'lessons'
@@ -819,6 +922,7 @@ export function AdminPanel({
             onClick={() => {
               setActiveTab('legal-acts');
               setBulkMatchMode(false);
+              setSieveMode(false);
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
               activeTab === 'legal-acts'
@@ -833,6 +937,7 @@ export function AdminPanel({
             onClick={() => {
               setActiveTab('reports');
               setBulkMatchMode(false);
+              setSieveMode(false);
               void onRefreshReports();
             }}
             className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
@@ -1344,11 +1449,18 @@ export function AdminPanel({
             onClose={() => setBulkMatchMode(false)}
             onQuestionsUpdated={onQuestionsUpdated}
           />
+        ) : sieveMode ? (
+          <LicenseCategorySieve
+            questions={questions}
+            categories={allCategoryNames}
+            onClose={() => setSieveMode(false)}
+            onQuestionsUpdated={onQuestionsUpdated}
+          />
         ) : (
         <section className="space-y-4">
           <div className="flex flex-col justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:flex-row lg:items-center dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-1 flex-wrap items-center gap-3">
-              <div className="relative min-w-[220px] flex-1">
+              <div className="relative min-w-[200px] flex-1">
                 <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-slate-400" />
                 <input
                   type="text"
@@ -1360,14 +1472,29 @@ export function AdminPanel({
               </div>
 
               <select
+                aria-label="Filtruj po dziale tematycznym"
                 value={filterCategory}
                 onChange={(e) => setFilterCategory(e.target.value)}
                 className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               >
-                <option value="__ALL__">Wszystkie kategorie</option>
+                <option value="__ALL__">Wszystkie działy</option>
                 {allCategoryNames.map((cat) => (
                   <option key={cat} value={cat}>
                     {cat}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Filtruj po kategorii prawa jazdy"
+                value={filterLicenseCategory}
+                onChange={(e) => setFilterLicenseCategory(e.target.value as '__ALL__' | LicenseCategory)}
+                className="h-10 rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+              >
+                <option value="__ALL__">Wszystkie kat. prawa jazdy</option>
+                {LICENSE_CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.shortLabel}
                   </option>
                 ))}
               </select>
@@ -1398,6 +1525,15 @@ export function AdminPanel({
                   <span>Cofnij ostatnie hurtowe dodanie obrazków ({undoableBulkImageIds.length})</span>
                 </button>
               )}
+
+              <button
+                type="button"
+                onClick={() => setSieveMode(true)}
+                className="flex h-10 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-50 px-3.5 text-xs font-semibold text-emerald-800 transition-colors hover:bg-emerald-100 dark:border-emerald-500 dark:bg-emerald-950/40 dark:text-emerald-300 dark:hover:bg-emerald-950/70"
+              >
+                <Car className="h-4 w-4" aria-hidden="true" />
+                <span>Rozdziel kategorie A / C / D / T</span>
+              </button>
 
               <button
                 type="button"
@@ -1481,7 +1617,20 @@ export function AdminPanel({
                   className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
                 >
                   <FolderInput className="h-3.5 w-3.5 text-blue-700 dark:text-blue-400" aria-hidden="true" />
-                  <span>Zmień kategorię</span>
+                  <span>Zmień dział tematyczny</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={bulkActionProcessing}
+                  onClick={() => {
+                    setBulkTargetLicenseCategory('B');
+                    setBulkLicenseModalOpen(true);
+                  }}
+                  className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 text-xs font-semibold text-emerald-900 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                >
+                  <Car className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>Zmień kategorię prawa jazdy</span>
                 </button>
 
                 <button
@@ -1589,6 +1738,10 @@ export function AdminPanel({
                     )}
                     <div>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                        <span className="font-semibold text-emerald-700 dark:text-emerald-400">
+                          {formatLicenseCategoryLabel(q.licenseCategory)}
+                        </span>
+                        <span aria-hidden="true">·</span>
                         <span className="font-semibold text-blue-700 dark:text-blue-400">
                           {q.category}
                         </span>
@@ -1769,16 +1922,21 @@ export function AdminPanel({
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {visibleReports.map((r) => {
                 const targetQuestion = questions.find((q) => q.id === r.questionId);
+                const draftValue = replyDrafts[r.id] ?? '';
+                const isSendingThis = sendingReplyId === r.id;
+                const feedbackForThis =
+                  replyFeedback?.reportId === r.id ? replyFeedback : null;
+
                 return (
                   <article
                     key={r.id}
-                    className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900"
+                    className="rounded-xl border border-slate-200 bg-white p-5 space-y-3 dark:border-slate-800 dark:bg-slate-900"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                      <div className="flex flex-wrap items-center gap-2 text-slate-500 dark:text-slate-400">
                         <span
                           className={`font-semibold ${
                             r.status === 'open'
@@ -1786,23 +1944,28 @@ export function AdminPanel({
                               : 'text-emerald-700 dark:text-emerald-400'
                           }`}
                         >
-                          {r.status === 'open' ? 'Otwarte' : 'Rozwiązane'}
+                          {r.status === 'open' ? 'Otwarte' : 'Załatwione'}
                         </span>
                         <span aria-hidden="true">·</span>
-                        <span>Zgłosił: {r.reporterNick}</span>
+                        <span>
+                          Zgłosił: <strong className="text-slate-800 dark:text-slate-200">{r.userNick}</strong>
+                        </span>
                         <span aria-hidden="true">·</span>
                         <span>{r.category}</span>
                         {r.createdAt && (
                           <>
                             <span aria-hidden="true">·</span>
                             <span className="font-mono tabular-nums">
-                              {r.createdAt.toLocaleDateString('pl-PL')}
+                              {r.createdAt.toLocaleString('pl-PL', {
+                                dateStyle: 'short',
+                                timeStyle: 'short'
+                              })}
                             </span>
                           </>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {targetQuestion && (
                           <button
                             type="button"
@@ -1818,7 +1981,7 @@ export function AdminPanel({
                           onClick={() => void handleToggleReportStatus(r)}
                           className="cursor-pointer rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                         >
-                          {r.status === 'open' ? 'Oznacz jako rozwiązane' : 'Otwórz ponownie'}
+                          {r.status === 'open' ? 'Oznacz jako załatwione' : 'Otwórz ponownie'}
                         </button>
                         <button
                           type="button"
@@ -1831,12 +1994,96 @@ export function AdminPanel({
                       </div>
                     </div>
 
-                    <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                      Pytanie: {r.questionSnippet}
-                    </p>
-                    <p className="mt-2 rounded-lg bg-slate-50 p-3 text-sm font-medium text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-                      {r.reason}
-                    </p>
+                    <div className="space-y-1">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                        Treść pytania
+                      </p>
+                      <p className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                        {targetQuestion?.question ?? r.questionText}
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-950">
+                      <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                        Uwaga kursanta ({r.userNick}):
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-slate-900 dark:text-slate-100">
+                        {r.reason}
+                      </p>
+                    </div>
+
+                    {r.adminReply && (
+                      <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-3 text-xs dark:border-blue-900/60 dark:bg-blue-950/30">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-blue-800 dark:text-blue-300">
+                          <span className="font-bold">Wysłana odpowiedź administratora</span>
+                          <span className="font-mono text-[11px] tabular-nums">
+                            {r.repliedAt
+                              ? r.repliedAt.toLocaleString('pl-PL', {
+                                  dateStyle: 'short',
+                                  timeStyle: 'short'
+                                })
+                              : ''}{' '}
+                            · {r.isReadByUser ? 'Przeczytana przez kursanta' : 'Nieprzeczytana'}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm whitespace-pre-wrap text-slate-900 dark:text-slate-100">
+                          {r.adminReply}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Formularz odpowiedzi kursantowi */}
+                    <div className="border-t border-slate-100 pt-3 space-y-2 dark:border-slate-800">
+                      <label
+                        htmlFor={`reply-input-${r.id}`}
+                        className="block text-xs font-semibold text-slate-700 dark:text-slate-300"
+                      >
+                        Odpowiedz kursantowi
+                      </label>
+                      <textarea
+                        id={`reply-input-${r.id}`}
+                        rows={2}
+                        maxLength={2000}
+                        value={draftValue}
+                        onChange={(e) =>
+                          setReplyDrafts((prev) => ({ ...prev, [r.id]: e.target.value }))
+                        }
+                        placeholder={
+                          r.adminReply
+                            ? 'Wpisz nową odpowiedź, aby zaktualizować wiadomość i wysłać powiadomienie...'
+                            : 'Napisz wyjaśnienie lub informację o poprawieniu pytania...'
+                        }
+                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-blue-600 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                      />
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          {feedbackForThis && (
+                            <p
+                              className={`text-xs font-medium ${
+                                feedbackForThis.type === 'ok'
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-red-600 dark:text-red-400'
+                              }`}
+                            >
+                              {feedbackForThis.text}
+                            </p>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!draftValue.trim() || isSendingThis}
+                          onClick={() => void handleReplyToReport(r)}
+                          className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-600 dark:hover:bg-emerald-500"
+                        >
+                          {isSendingThis ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                          ) : (
+                            <Send className="h-3.5 w-3.5" aria-hidden="true" />
+                          )}
+                          <span>Wyślij odpowiedź i oznacz jako załatwione</span>
+                        </button>
+                      </div>
+                    </div>
                   </article>
                 );
               })}
@@ -1867,23 +2114,47 @@ export function AdminPanel({
             </div>
 
             <form onSubmit={handleSaveEditedQuestion} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">
-                  Kategoria
-                </label>
-                <input
-                  list="admin-categories-datalist"
-                  value={editingQuestion.category}
-                  onChange={(e) =>
-                    setEditingQuestion({ ...editingQuestion, category: e.target.value })
-                  }
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
-                />
-                <datalist id="admin-categories-datalist">
-                  {allCategoryNames.map((cat) => (
-                    <option key={cat} value={cat} />
-                  ))}
-                </datalist>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Dział tematyczny
+                  </label>
+                  <input
+                    list="admin-categories-datalist"
+                    value={editingQuestion.category}
+                    onChange={(e) =>
+                      setEditingQuestion({ ...editingQuestion, category: e.target.value })
+                    }
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  />
+                  <datalist id="admin-categories-datalist">
+                    {allCategoryNames.map((cat) => (
+                      <option key={cat} value={cat} />
+                    ))}
+                  </datalist>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Kategoria prawa jazdy
+                  </label>
+                  <select
+                    value={editingQuestion.licenseCategory ?? 'B'}
+                    onChange={(e) =>
+                      setEditingQuestion({
+                        ...editingQuestion,
+                        licenseCategory: e.target.value as LicenseCategory
+                      })
+                    }
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                  >
+                    {LICENSE_CATEGORY_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -2195,6 +2466,74 @@ export function AdminPanel({
                 >
                   {bulkActionProcessing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                   <span>Zapisz nową kategorię</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL ZMIANY KATEGORII PRAWA JAZDY DLA ZAZNACZONYCH PYTAŃ */}
+      {bulkLicenseModalOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                Zmień kategorię prawa jazdy ({selectedQuestionIds.length} pytań)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setBulkLicenseModalOpen(false)}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleBulkChangeLicenseCategorySubmit} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="bulk-license-select"
+                  className="mb-1.5 block text-xs font-semibold text-slate-700 dark:text-slate-300"
+                >
+                  Docelowa kategoria prawa jazdy
+                </label>
+                <select
+                  id="bulk-license-select"
+                  value={bulkTargetLicenseCategory}
+                  onChange={(e) => setBulkTargetLicenseCategory(e.target.value as LicenseCategory)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-white"
+                >
+                  {LICENSE_CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Operacja zachowuje dział tematyczny (np. Dydaktyka, Prawo o ruchu drogowym) oraz wszystkie postępy kursantów.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setBulkLicenseModalOpen(false)}
+                  className="cursor-pointer rounded-lg border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300"
+                >
+                  Anuluj
+                </button>
+                <button
+                  type="submit"
+                  disabled={bulkActionProcessing}
+                  className="flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600"
+                >
+                  {bulkActionProcessing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  <span>Zapisz kategorię prawa jazdy</span>
                 </button>
               </div>
             </form>

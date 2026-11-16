@@ -1,11 +1,15 @@
 import { User } from 'firebase/auth';
 import {
+  DocumentData,
+  QueryDocumentSnapshot,
   Timestamp,
   collection,
   deleteDoc,
   doc,
   getDoc,
   getDocs,
+  increment,
+  onSnapshot,
   orderBy,
   query,
   serverTimestamp,
@@ -38,7 +42,8 @@ import {
   compareQuestionsByCreationOrder,
   generateQuestionId,
   getTodayLocalIsoDate,
-  getYesterdayLocalIsoDate
+  getYesterdayLocalIsoDate,
+  normalizeLicenseCategory
 } from '../lib/questionUtils';
 import {
   CommentItem,
@@ -46,6 +51,7 @@ import {
   LeaderboardEntry,
   LegalAct,
   Lesson,
+  LicenseCategory,
   ParsedQuestionInput,
   Question,
   ReportItem,
@@ -74,6 +80,10 @@ function buildCleanQuestionPayload(q: Question, includeCreatedAt = false): Recor
     hasImagePlaceholder: Boolean(q.hasImagePlaceholder),
     updatedAt: serverTimestamp()
   };
+  const safeLicenseCategory = normalizeLicenseCategory(q.licenseCategory);
+  if (safeLicenseCategory) {
+    payload.licenseCategory = safeLicenseCategory;
+  }
   if (includeCreatedAt) {
     payload.createdAt = serverTimestamp();
   } else if (q.createdAt) {
@@ -90,6 +100,9 @@ function buildCleanQuestionPayload(q: Question, includeCreatedAt = false): Recor
   }
   if (q.importBatchLabel) {
     payload.importBatchLabel = q.importBatchLabel;
+  }
+  if (typeof q.wrongCount === 'number' && q.wrongCount >= 0) {
+    payload.wrongCount = q.wrongCount;
   }
   return payload;
 }
@@ -167,6 +180,7 @@ export async function syncQuestionsWithCache(
         id: String(data.id ?? d.id),
         questionHash: String(data.questionHash ?? ''),
         category: String(data.category ?? 'Ogólne / Mix'),
+        licenseCategory: normalizeLicenseCategory(data.licenseCategory),
         question: String(data.question ?? ''),
         options: Array.isArray(data.options) ? (data.options as string[]) : [],
         correctAnswers: Array.isArray(data.correctAnswers) ? (data.correctAnswers as number[]) : [0],
@@ -175,6 +189,8 @@ export async function syncQuestionsWithCache(
             ? data.imageBase64
             : undefined,
         hasImagePlaceholder: Boolean(data.hasImagePlaceholder),
+        wrongCount:
+          typeof data.wrongCount === 'number' && data.wrongCount >= 0 ? data.wrongCount : 0,
         explanation: typeof data.explanation === 'string' ? data.explanation : undefined,
         importBatchId: typeof data.importBatchId === 'string' ? data.importBatchId : undefined,
         importBatchLabel: typeof data.importBatchLabel === 'string' ? data.importBatchLabel : undefined,
@@ -388,7 +404,11 @@ export async function loadOrCreateUserProgress(
         points: typeof data.points === 'number' ? data.points : 0,
         streakDays: typeof data.streakDays === 'number' ? data.streakDays : 0,
         lastStudyDate: typeof data.lastStudyDate === 'string' ? data.lastStudyDate : '',
-        examHistory: Array.isArray(data.examHistory) ? (data.examHistory as ExamHistoryItem[]) : []
+        examHistory: Array.isArray(data.examHistory) ? (data.examHistory as ExamHistoryItem[]) : [],
+        unreadNotifications:
+          typeof data.unreadNotifications === 'number'
+            ? Math.max(0, data.unreadNotifications)
+            : 0
       };
       return progress;
     }
@@ -411,7 +431,8 @@ export async function loadOrCreateUserProgress(
       points: 0,
       streakDays: 0,
       lastStudyDate: '',
-      examHistory: []
+      examHistory: [],
+      unreadNotifications: 0
     };
 
     await setDoc(userRef, {
@@ -435,6 +456,40 @@ export async function loadOrCreateUserProgress(
   }
 }
 
+export function subscribeToUserUnreadNotifications(
+  uid: string,
+  onCount: (count: number) => void
+): () => void {
+  const userRef = doc(db, 'users', uid);
+  return onSnapshot(
+    userRef,
+    (snap) => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      const count =
+        typeof data.unreadNotifications === 'number'
+          ? Math.max(0, data.unreadNotifications)
+          : 0;
+      onCount(count);
+    },
+    (error) => {
+      handleFirestoreError(error, OperationType.GET, `users/${uid}`);
+    }
+  );
+}
+
+export async function clearUserUnreadNotifications(uid: string): Promise<void> {
+  const userRef = doc(db, 'users', uid);
+  try {
+    await updateDoc(userRef, {
+      unreadNotifications: 0,
+      updatedAt: serverTimestamp()
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+  }
+}
+
 async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> {
   const userRef = doc(db, 'users', progress.uid);
   const leaderboardRef = doc(db, 'leaderboard', progress.uid);
@@ -445,23 +500,27 @@ async function persistUserAndLeaderboard(progress: UserProgress): Promise<void> 
       : 0;
 
   try {
-    await setDoc(userRef, {
-      uid: progress.uid,
-      nick: progress.nick,
-      email: progress.email,
-      masteredIds: progress.masteredIds.slice(0, 10000),
-      completedLessonIds: (progress.completedLessonIds ?? []).slice(0, 2000),
-      mistakeStreaks: progress.mistakeStreaks,
-      askLecturerIds: progress.askLecturerIds.slice(0, 5000),
-      privateNotes: progress.privateNotes,
-      totalAnswered: progress.totalAnswered,
-      totalCorrect: progress.totalCorrect,
-      points: progress.points,
-      streakDays: progress.streakDays,
-      lastStudyDate: progress.lastStudyDate ?? '',
-      examHistory: (progress.examHistory ?? []).slice(-100),
-      updatedAt: serverTimestamp()
-    });
+    await setDoc(
+      userRef,
+      {
+        uid: progress.uid,
+        nick: progress.nick,
+        email: progress.email,
+        masteredIds: progress.masteredIds.slice(0, 10000),
+        completedLessonIds: (progress.completedLessonIds ?? []).slice(0, 2000),
+        mistakeStreaks: progress.mistakeStreaks,
+        askLecturerIds: progress.askLecturerIds.slice(0, 5000),
+        privateNotes: progress.privateNotes,
+        totalAnswered: progress.totalAnswered,
+        totalCorrect: progress.totalCorrect,
+        points: progress.points,
+        streakDays: progress.streakDays,
+        lastStudyDate: progress.lastStudyDate ?? '',
+        examHistory: (progress.examHistory ?? []).slice(-100),
+        updatedAt: serverTimestamp()
+      },
+      { merge: true }
+    );
 
     await setDoc(leaderboardRef, {
       uid: progress.uid,
@@ -629,6 +688,38 @@ export async function saveExamCompletion(
   return updated;
 }
 
+/**
+ * Zwiększa w tle globalny licznik błędnych odpowiedzi (wrongCount) na pytaniach w Firestore
+ * za pomocą atomowego increment(1). Celowo NIE podbija dbVersion ani nie aktualizuje updatedAt,
+ * aby nie generować dodatkowych odczytów całej kolekcji u innych kursantów.
+ */
+export async function incrementQuestionsWrongCount(questionIds: string[]): Promise<void> {
+  const uniqueIds = Array.from(new Set(questionIds.filter(Boolean)));
+  if (uniqueIds.length === 0) return;
+
+  try {
+    if (uniqueIds.length === 1) {
+      await updateDoc(doc(db, 'questions', uniqueIds[0]), {
+        wrongCount: increment(1)
+      });
+      return;
+    }
+
+    for (let i = 0; i < uniqueIds.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = uniqueIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const qId of chunk) {
+        batch.update(doc(db, 'questions', qId), {
+          wrongCount: increment(1)
+        });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    console.warn('Nie udało się zaktualizować statystyki błędów grupy w tle:', error);
+  }
+}
+
 export async function fetchLeaderboard(): Promise<LeaderboardEntry[]> {
   try {
     const q = query(collection(db, 'leaderboard'), orderBy('points', 'desc'));
@@ -700,24 +791,48 @@ export async function deleteComment(commentId: string): Promise<void> {
   }
 }
 
-// --- ZGŁOSZENIA BŁĘDÓW (kolekcja reports) ---
+// --- ZGŁOSZENIA BŁĘDÓW I ODPOWIEDZI ADMINA (kolekcja reports) ---
+
+function mapReportDoc(d: QueryDocumentSnapshot<DocumentData>): ReportItem {
+  const data = d.data();
+  return {
+    id: d.id,
+    questionId: String(data.questionId ?? ''),
+    questionText: String(data.questionText ?? data.questionSnippet ?? ''),
+    category: String(data.category ?? ''),
+    userId: String(data.userId ?? data.reporterUid ?? ''),
+    userNick: String(data.userNick ?? data.reporterNick ?? 'Kursant'),
+    reason: String(data.reason ?? ''),
+    status: data.status === 'resolved' ? 'resolved' : 'open',
+    adminReply:
+      typeof data.adminReply === 'string' && data.adminReply.trim().length > 0
+        ? data.adminReply
+        : null,
+    repliedAt: timestampToDate(data.repliedAt),
+    isReadByUser: typeof data.isReadByUser === 'boolean' ? data.isReadByUser : true,
+    createdAt: timestampToDate(data.createdAt)
+  };
+}
 
 export async function submitReport(
   question: Question,
-  reporterUid: string,
-  reporterNick: string,
+  userId: string,
+  userNick: string,
   reason: string
 ): Promise<void> {
   const newRef = doc(collection(db, 'reports'));
   try {
     await setDoc(newRef, {
       questionId: question.id,
-      questionSnippet: question.question.slice(0, 280),
+      questionText: question.question.slice(0, 280),
       category: question.category.slice(0, 120),
-      reporterUid,
-      reporterNick: reporterNick.slice(0, 60),
+      userId,
+      userNick: userNick.slice(0, 60),
       reason: reason.trim().slice(0, 1000),
       status: 'open',
+      adminReply: null,
+      repliedAt: null,
+      isReadByUser: true,
       createdAt: serverTimestamp()
     });
   } catch (error) {
@@ -728,26 +843,72 @@ export async function submitReport(
 export async function fetchReports(): Promise<ReportItem[]> {
   try {
     const snap = await getDocs(collection(db, 'reports'));
-    const items: ReportItem[] = snap.docs.map((d) => {
-      const data = d.data();
-      return {
-        id: d.id,
-        questionId: String(data.questionId ?? ''),
-        questionSnippet: String(data.questionSnippet ?? ''),
-        category: String(data.category ?? ''),
-        reporterUid: String(data.reporterUid ?? ''),
-        reporterNick: String(data.reporterNick ?? 'Kursant'),
-        reason: String(data.reason ?? ''),
-        status: data.status === 'resolved' ? 'resolved' : 'open',
-        createdAt: timestampToDate(data.createdAt)
-      };
-    });
+    const items = snap.docs.map(mapReportDoc);
     return items.sort((a, b) => {
       if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
       return (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0);
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, 'reports');
+  }
+}
+
+export async function fetchUserReports(userId: string): Promise<ReportItem[]> {
+  try {
+    const q = query(collection(db, 'reports'), where('userId', '==', userId));
+    const snap = await getDocs(q);
+    const items = snap.docs.map(mapReportDoc);
+    return items.sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'reports');
+  }
+}
+
+export async function markUserReportsAsRead(reportIds: string[]): Promise<void> {
+  if (reportIds.length === 0) return;
+  try {
+    for (let i = 0; i < reportIds.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = reportIds.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const reportId of chunk) {
+        batch.update(doc(db, 'reports', reportId), { isReadByUser: true });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, 'reports');
+  }
+}
+
+export async function replyToReport(
+  report: ReportItem,
+  adminReplyText: string
+): Promise<void> {
+  const cleanReply = adminReplyText.trim().slice(0, 2000);
+  if (!cleanReply) {
+    throw new Error('Wpisz treść odpowiedzi dla kursanta.');
+  }
+
+  try {
+    await updateDoc(doc(db, 'reports', report.id), {
+      adminReply: cleanReply,
+      status: 'resolved',
+      isReadByUser: false,
+      repliedAt: serverTimestamp()
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `reports/${report.id}`);
+  }
+
+  if (report.userId) {
+    try {
+      await updateDoc(doc(db, 'users', report.userId), {
+        unreadNotifications: increment(1),
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${report.userId}`);
+    }
   }
 }
 
@@ -788,6 +949,7 @@ export async function batchImportQuestions(
     id: generateQuestionId(idx, importTimestamp),
     questionHash: item.questionHash,
     category: item.category,
+    ...(item.licenseCategory ? { licenseCategory: item.licenseCategory } : {}),
     question: item.question,
     options: item.options,
     correctAnswers: item.correctAnswers,
@@ -975,6 +1137,36 @@ export async function batchChangeQuestionsCategory(
   const nextCategories = Array.from(new Set([...existingCategories, cleanCategory]));
   const nextVersion = await bumpDatabaseVersion(nextCategories);
   return { nextVersion, nextCategories };
+}
+
+/**
+ * Masowa zmiana kategorii prawa jazdy (licenseCategory) w paczkach batch po max 400 rekordów.
+ * Nie narusza działu tematycznego (category), ID pytania ani postępów kursanta.
+ */
+export async function batchUpdateQuestionsLicenseCategory(
+  updates: { questionId: string; licenseCategory: LicenseCategory }[]
+): Promise<number> {
+  if (updates.length === 0) {
+    throw new Error('Brak pytań do przypisania kategorii prawa jazdy.');
+  }
+
+  try {
+    for (let i = 0; i < updates.length; i += FIRESTORE_BATCH_LIMIT) {
+      const chunk = updates.slice(i, i + FIRESTORE_BATCH_LIMIT);
+      const batch = writeBatch(db);
+      for (const item of chunk) {
+        batch.update(doc(db, 'questions', item.questionId), {
+          licenseCategory: item.licenseCategory,
+          updatedAt: serverTimestamp()
+        });
+      }
+      await batch.commit();
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, 'questions');
+  }
+
+  return await bumpDatabaseVersion();
 }
 
 /**

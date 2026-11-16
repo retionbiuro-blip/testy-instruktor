@@ -2,6 +2,7 @@ import {
   ArrowLeft,
   ArrowRight,
   BookOpen,
+  Brain,
   CheckCircle2,
   ChevronRight,
   ExternalLink,
@@ -9,6 +10,7 @@ import {
   Headphones,
   Lightbulb,
   Lock,
+  Presentation,
   Scale,
   Search,
   ShieldCheck,
@@ -17,7 +19,11 @@ import {
 import { useMemo, useState } from 'react';
 import { toggleLessonCompleted } from '../services/firestoreService';
 import { Lesson, UserProgress } from '../types';
+import { GlossaryFlashcardsSection } from './GlossaryFlashcardsSection';
+import { LectureSimulatorSection } from './LectureSimulatorSection';
 import { MarkdownContent } from './MarkdownContent';
+
+type KnowledgeTab = 'lessons' | 'lecture-sim' | 'glossary';
 
 interface KnowledgeBaseViewProps {
   lessons: Lesson[];
@@ -46,6 +52,7 @@ export function KnowledgeBaseView({
   onOpenAdminMaterials,
   onBackToDashboard
 }: KnowledgeBaseViewProps) {
+  const [activeTab, setActiveTab] = useState<KnowledgeTab>('lessons');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategoryFilter, setSelectedCategoryFilter] = useState<string>('__ALL__');
   const [activeLessonId, setActiveLessonId] = useState<string | null>(null);
@@ -135,60 +142,8 @@ export function KnowledgeBaseView({
     }
   }
 
-  // Widok dla niezalogowanego gościa (reguły kolekcji lessons wymagają request.auth != null)
-  if (isGuest) {
-    return (
-      <div className="mx-auto max-w-3xl space-y-6">
-        <div className="flex items-center justify-between border-b border-slate-200 pb-4 dark:border-slate-800">
-          <div>
-            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-              Baza Wiedzy / Materiały
-            </p>
-            <h1 className="font-display mt-1 text-2xl font-bold text-slate-900 dark:text-white">
-              Teoria, ustawy i Asystent NotebookLM
-            </h1>
-          </div>
-          <button
-            type="button"
-            onClick={onBackToDashboard}
-            className="flex h-10 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 text-sm font-medium text-slate-700 whitespace-nowrap hover:bg-slate-100 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
-          >
-            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-            <span>Wróć na pulpit</span>
-          </button>
-        </div>
-
-        <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
-          <Lock className="mx-auto h-9 w-9 text-blue-700 dark:text-blue-400" aria-hidden="true" />
-          <h2 className="font-display mt-3 text-lg font-bold text-slate-900 dark:text-white">
-            Baza Wiedzy dostępna po zalogowaniu
-          </h2>
-          <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-            Rozdziały z ustaw, podsumowania na egzamin oraz dostęp do Wirtualnego Wykładowcy (NotebookLM) wymagają bezpłatnego konta kursanta, aby system mógł bezpiecznie synchronizować materiały i zapisywać przerobione lekcje.
-          </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <button
-              type="button"
-              onClick={() => onRequireAuth('register')}
-              className="cursor-pointer rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
-            >
-              Załóż darmowe konto
-            </button>
-            <button
-              type="button"
-              onClick={() => onRequireAuth('login')}
-              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-            >
-              Zaloguj się
-            </button>
-          </div>
-        </section>
-      </div>
-    );
-  }
-
   // Widok szczegółowy pojedynczego rozdziału (Czytelnia)
-  if (activeLesson) {
+  if (!isGuest && activeTab === 'lessons' && activeLesson) {
     const isCompleted = completedSet.has(activeLesson.id);
     const prevLesson = activeLessonIndex > 0 ? sortedLessons[activeLessonIndex - 1] : null;
     const nextLesson =
@@ -370,14 +325,13 @@ export function KnowledgeBaseView({
     );
   }
 
-  // Widok główny Bazy Wiedzy (NotebookLM + wyszukiwarka + spis rozdziałów)
+  // Widok główny Bazy Wiedzy (zakładki: Rozdziały i Ustawy, Pokaz Wykładu, Słownik Dydaktyki i Psychologii)
   return (
     <div className="space-y-6">
       <section className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end dark:border-slate-800">
         <div>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            Baza Wiedzy / Materiały · {totalLessonsCount}{' '}
-            {totalLessonsCount === 1 ? 'rozdział' : 'rozdziałów'} w pamięci lokalnej
+            Baza Wiedzy / Materiały · Teoria, pokaz wykładu i pojęcia egzaminacyjne
           </p>
           <h1
             style={{ textWrap: 'balance' }}
@@ -397,36 +351,120 @@ export function KnowledgeBaseView({
         </button>
       </section>
 
-      {/* Sekcja Wirtualny Wykładowca (Google NotebookLM) — widoczna tylko, gdy admin podał URL */}
-      {safeNotebookLmUrl && (
-        <section
-          aria-label="Wirtualny Wykładowca (Google NotebookLM)"
-          className="flex flex-col justify-between gap-5 rounded-xl border border-blue-200 bg-blue-50/70 p-6 md:flex-row md:items-center dark:border-blue-900/60 dark:bg-blue-950/30"
+      {/* Nawigacja wewnętrzna modułu Baza Wiedzy */}
+      <div
+        role="tablist"
+        aria-label="Sekcje Bazy Wiedzy"
+        className="flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 dark:border-slate-800 dark:bg-slate-900"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'lessons'}
+          onClick={() => setActiveTab('lessons')}
+          className={`flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg px-4 text-xs font-semibold whitespace-nowrap transition-colors sm:flex-none sm:text-sm ${
+            activeTab === 'lessons'
+              ? 'bg-blue-700 text-white dark:bg-blue-600'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+          }`}
         >
-          <div className="max-w-2xl space-y-2">
-            <div className="flex items-center gap-2 text-xs font-semibold text-blue-800 dark:text-blue-300">
-              <Headphones className="h-4 w-4" aria-hidden="true" />
-              <span>Wirtualny Wykładowca · Google NotebookLM</span>
-            </div>
-            <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
-              Zadawaj pytania z pełnych tekstów ustaw i słuchaj podsumowań audio
-            </h2>
-            <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
-              W naszym wspólnym notatniku Google NotebookLM znajdziesz pełne akty prawne i rozporządzenia dla kandydatów na instruktorów. Możesz zadać dowolne pytanie o przepis lub odtworzyć omówienie audio w drodze.
-            </p>
-          </div>
+          <BookOpen className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Rozdziały i Ustawy</span>
+        </button>
 
-          <a
-            href={safeNotebookLmUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex h-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-lg bg-blue-700 px-5 text-sm font-semibold text-white whitespace-nowrap transition-colors hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
-          >
-            <span>Otwórz Asystenta Ustaw (NotebookLM)</span>
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-          </a>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'lecture-sim'}
+          onClick={() => setActiveTab('lecture-sim')}
+          className={`flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg px-4 text-xs font-semibold whitespace-nowrap transition-colors sm:flex-none sm:text-sm ${
+            activeTab === 'lecture-sim'
+              ? 'bg-blue-700 text-white dark:bg-blue-600'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <Presentation className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Pokaz Wykładu (Konspekty i Timer)</span>
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'glossary'}
+          onClick={() => setActiveTab('glossary')}
+          className={`flex h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg px-4 text-xs font-semibold whitespace-nowrap transition-colors sm:flex-none sm:text-sm ${
+            activeTab === 'glossary'
+              ? 'bg-blue-700 text-white dark:bg-blue-600'
+              : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+          }`}
+        >
+          <Brain className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Słownik Dydaktyki i Psychologii (Fiszki)</span>
+        </button>
+      </div>
+
+      {activeTab === 'lecture-sim' ? (
+        <LectureSimulatorSection />
+      ) : activeTab === 'glossary' ? (
+        <GlossaryFlashcardsSection />
+      ) : isGuest ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
+          <Lock className="mx-auto h-9 w-9 text-blue-700 dark:text-blue-400" aria-hidden="true" />
+          <h2 className="font-display mt-3 text-lg font-bold text-slate-900 dark:text-white">
+            Rozdziały z ustaw dostępne po zalogowaniu
+          </h2>
+          <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+            Rozdziały z ustaw oraz dostęp do Wirtualnego Wykładowcy (NotebookLM) wymagają bezpłatnego konta kursanta. W międzyczasie możesz swobodnie korzystać z zakładek „Pokaz Wykładu” oraz „Słownik Dydaktyki i Psychologii (Fiszki)” powyżej.
+          </p>
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => onRequireAuth('register')}
+              className="cursor-pointer rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+            >
+              Załóż darmowe konto
+            </button>
+            <button
+              type="button"
+              onClick={() => onRequireAuth('login')}
+              className="cursor-pointer rounded-lg border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              Zaloguj się
+            </button>
+          </div>
         </section>
-      )}
+      ) : (
+        <>
+          {/* Sekcja Wirtualny Wykładowca (Google NotebookLM) — widoczna tylko, gdy admin podał URL */}
+          {safeNotebookLmUrl && (
+            <section
+              aria-label="Wirtualny Wykładowca (Google NotebookLM)"
+              className="flex flex-col justify-between gap-5 rounded-xl border border-blue-200 bg-blue-50/70 p-6 md:flex-row md:items-center dark:border-blue-900/60 dark:bg-blue-950/30"
+            >
+              <div className="max-w-2xl space-y-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-blue-800 dark:text-blue-300">
+                  <Headphones className="h-4 w-4" aria-hidden="true" />
+                  <span>Wirtualny Wykładowca · Google NotebookLM</span>
+                </div>
+                <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
+                  Zadawaj pytania z pełnych tekstów ustaw i słuchaj podsumowań audio
+                </h2>
+                <p className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+                  W naszym wspólnym notatniku Google NotebookLM znajdziesz pełne akty prawne i rozporządzenia dla kandydatów na instruktorów. Możesz zadać dowolne pytanie o przepis lub odtworzyć omówienie audio w drodze.
+                </p>
+              </div>
+
+              <a
+                href={safeNotebookLmUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex h-11 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-lg bg-blue-700 px-5 text-sm font-semibold text-white whitespace-nowrap transition-colors hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500"
+              >
+                <span>Otwórz Asystenta Ustaw (NotebookLM)</span>
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              </a>
+            </section>
+          )}
 
       {/* Pasek postępu i lokalna wyszukiwarka (0 odczytów Firestore) */}
       {totalLessonsCount > 0 && (
@@ -610,6 +648,8 @@ export function KnowledgeBaseView({
             </section>
           ))}
         </div>
+      )}
+        </>
       )}
     </div>
   );

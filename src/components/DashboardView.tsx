@@ -3,6 +3,8 @@ import {
   Award,
   BookMarked,
   BookOpen,
+  ChevronDown,
+  ChevronUp,
   ClipboardCheck,
   Flame,
   HelpCircle,
@@ -11,10 +13,21 @@ import {
   RotateCcw,
   ShieldCheck,
   Target,
+  TrendingUp,
   Zap
 } from 'lucide-react';
+import { useState } from 'react';
 import { ALL_CATEGORIES_KEY, ALL_CATEGORIES_LABEL } from '../config';
-import { AppView, LeaderboardEntry, Lesson, Question, UserProgress } from '../types';
+import { formatLicenseCategoryLabel, matchesLicenseCategory } from '../lib/questionUtils';
+import {
+  AppView,
+  LeaderboardEntry,
+  Lesson,
+  LicenseCategoryFilter,
+  Question,
+  UserProgress
+} from '../types';
+import { LicenseCategorySwitcher } from './LicenseCategorySwitcher';
 
 interface DashboardViewProps {
   questions: Question[];
@@ -25,13 +38,26 @@ interface DashboardViewProps {
   leaderboard: LeaderboardEntry[];
   selectedCategory: string;
   onSelectCategory: (cat: string) => void;
+  selectedLicenseCategory: LicenseCategoryFilter;
+  onSelectLicenseCategory: (lc: LicenseCategoryFilter) => void;
   onStartMode: (view: AppView, category?: string) => void;
+  onPracticeTop20: (questionIds: string[]) => void;
   isAdmin: boolean;
   isGuest: boolean;
   onRequireAuth: (mode: 'login' | 'register') => void;
   dbVersion: number;
   onRefreshSync: () => void;
   syncing: boolean;
+}
+
+function formatWrongCountLabel(count: number): string {
+  if (count === 1) return '1 błąd';
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${count} błędy`;
+  }
+  return `${count} błędów`;
 }
 
 export function DashboardView({
@@ -43,7 +69,10 @@ export function DashboardView({
   leaderboard,
   selectedCategory,
   onSelectCategory,
+  selectedLicenseCategory,
+  onSelectLicenseCategory,
   onStartMode,
+  onPracticeTop20,
   isAdmin,
   isGuest,
   onRequireAuth,
@@ -51,14 +80,20 @@ export function DashboardView({
   onRefreshSync,
   syncing
 }: DashboardViewProps) {
+  const [top20Expanded, setTop20Expanded] = useState(false);
   const masteredSet = new Set(progress.masteredIds);
   const completedLessonsSet = new Set(progress.completedLessonIds ?? []);
   const completedLessonsCount = lessons.filter((l) => completedLessonsSet.has(l.id)).length;
   const hasNotebookLm = Boolean(notebookLmUrl && /^https?:\/\/.+/i.test(notebookLmUrl.trim()));
   const mistakesCount = Object.keys(progress.mistakeStreaks).length;
   const lecturerCount = progress.askLecturerIds.length;
-  const totalQuestions = questions.length;
-  const masteredTotal = questions.filter((q) => masteredSet.has(q.id)).length;
+
+  const totalAllQuestions = questions.length;
+  const licenseQuestions = questions.filter((q) =>
+    matchesLicenseCategory(q, selectedLicenseCategory)
+  );
+  const totalQuestions = licenseQuestions.length;
+  const masteredTotal = licenseQuestions.filter((q) => masteredSet.has(q.id)).length;
   const overallMasteryPct = totalQuestions > 0 ? Math.round((masteredTotal / totalQuestions) * 100) : 0;
   const accuracy =
     progress.totalAnswered > 0
@@ -71,7 +106,7 @@ export function DashboardView({
   ).filter(Boolean);
 
   const categoryRows = allCategoryNames.map((cat) => {
-    const catQuestions = questions.filter((q) => q.category === cat);
+    const catQuestions = licenseQuestions.filter((q) => q.category === cat);
     const catMastered = catQuestions.filter((q) => masteredSet.has(q.id)).length;
     const pct = catQuestions.length > 0 ? Math.round((catMastered / catQuestions.length) * 100) : 0;
     return {
@@ -84,13 +119,18 @@ export function DashboardView({
 
   const topLeaderboard = leaderboard.slice(0, 6);
 
+  const topHardestQuestions = licenseQuestions
+    .filter((q) => (q.wrongCount ?? 0) > 0)
+    .sort((a, b) => (b.wrongCount ?? 0) - (a.wrongCount ?? 0))
+    .slice(0, 20);
+
   return (
     <div className="space-y-8">
       {/* Nagłówek powitalny */}
       <section className="flex flex-col justify-between gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end dark:border-slate-800">
         <div>
           <p className="text-xs font-medium text-slate-500 dark:text-slate-400">
-            {isGuest ? 'Tryb gościa' : 'Pulpit kursanta'} · Wersja bazy {dbVersion} · {totalQuestions} pytań w pamięci lokalnej
+            {isGuest ? 'Tryb gościa' : 'Pulpit kursanta'} · Wersja bazy {dbVersion} · {totalAllQuestions} pytań w pamięci lokalnej
           </p>
           <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl dark:text-white">
             {isGuest ? 'Witaj w trybie gościa' : `Witaj, ${progress.nick}`}
@@ -120,6 +160,13 @@ export function DashboardView({
           )}
         </div>
       </section>
+
+      {/* Przełącznik kategorii prawa jazdy (Kat. B domyślna) */}
+      <LicenseCategorySwitcher
+        questions={questions}
+        value={selectedLicenseCategory}
+        onChange={onSelectLicenseCategory}
+      />
 
       {/* Pasek kluczowych statystyk (dla zalogowanych) lub zaproszenie do konta (dla gościa) */}
       {isGuest ? (
@@ -157,7 +204,7 @@ export function DashboardView({
               {masteredTotal} <span className="text-sm font-normal text-slate-500">/ {totalQuestions}</span>
             </p>
             <p className="font-mono mt-1 text-xs text-slate-500 tabular-nums dark:text-slate-400">
-              {overallMasteryPct}% całej bazy
+              {overallMasteryPct}% w wybranej kat.
             </p>
           </div>
 
@@ -202,8 +249,20 @@ export function DashboardView({
         </section>
       )}
 
+      {/* Pusty stan, gdy dla wybranej kategorii prawa jazdy nie przypisano jeszcze pytań */}
+      {totalAllQuestions > 0 && totalQuestions === 0 && (
+        <section className="rounded-xl border border-slate-200 bg-white p-6 text-center dark:border-slate-800 dark:bg-slate-900">
+          <h2 className="font-display text-base font-bold text-slate-900 dark:text-white">
+            Brak pytań przypisanych do tej kategorii prawa jazdy
+          </h2>
+          <p className="mx-auto mt-1 max-w-lg text-xs text-slate-600 dark:text-slate-400">
+            Wybierz kategorię „Kat. B” lub „Wszystkie” powyżej, aby przejść do pełnej bazy pytań.
+          </p>
+        </section>
+      )}
+
       {/* Pusty stan, gdy w bazie nie ma jeszcze żadnych pytań */}
-      {totalQuestions === 0 && (
+      {totalAllQuestions === 0 && (
         <section className="rounded-xl border border-slate-200 bg-white p-8 text-center dark:border-slate-800 dark:bg-slate-900">
           <h2 className="font-display text-lg font-bold text-slate-900 dark:text-white">
             Baza pytań jest obecnie pusta
@@ -397,6 +456,113 @@ export function DashboardView({
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </span>
           </button>
+        </section>
+      )}
+
+      {/* Kafelek rozwijany: Top 20 najtrudniejszych pytań grupy */}
+      {totalQuestions > 0 && (
+        <section
+          aria-label="Top 20 najtrudniejszych pytań grupy"
+          className="overflow-hidden rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900"
+        >
+          <div className="flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center">
+            <div className="flex items-start gap-3.5">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/50 dark:text-amber-400">
+                <TrendingUp className="h-5 w-5" aria-hidden="true" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                  <span className="font-semibold text-amber-700 dark:text-amber-400">
+                    Statystyka grupy
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span>
+                    {selectedLicenseCategory === 'ALL_LICENSES'
+                      ? 'Wszystkie kategorie'
+                      : formatLicenseCategoryLabel(selectedLicenseCategory)}
+                  </span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono tabular-nums">
+                    {topHardestQuestions.length}{' '}
+                    {topHardestQuestions.length === 1 ? 'pytanie' : 'pytań'} na liście
+                  </span>
+                </div>
+                <h2 className="font-display mt-1 text-base font-bold text-slate-900 dark:text-white">
+                  Top 20 najtrudniejszych pytań grupy
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-600 dark:text-slate-400">
+                  Pytania, na których kursanci najczęściej popełniają błędy podczas nauki i egzaminów.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setTop20Expanded((v) => !v)}
+                aria-expanded={top20Expanded}
+                className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                {top20Expanded ? (
+                  <>
+                    <ChevronUp className="h-4 w-4" aria-hidden="true" />
+                    <span>Zwiń listę</span>
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-4 w-4" aria-hidden="true" />
+                    <span>Rozwiń listę</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                disabled={topHardestQuestions.length === 0}
+                onClick={() => onPracticeTop20(topHardestQuestions.map((q) => q.id))}
+                className="flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-amber-500 dark:text-slate-950 dark:hover:bg-amber-400"
+              >
+                <span>Przećwicz tę 20-stkę</span>
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+
+          {top20Expanded && (
+            <div className="border-t border-slate-200 bg-slate-50/60 dark:border-slate-800 dark:bg-slate-950/50">
+              {topHardestQuestions.length === 0 ? (
+                <div className="p-6 text-center text-xs text-slate-600 dark:text-slate-400">
+                  Lista jest jeszcze pusta — buduje się automatycznie na podstawie błędnych odpowiedzi kursantów w trybie Nauki i Egzaminu.
+                </div>
+              ) : (
+                <ol className="divide-y divide-slate-200 dark:divide-slate-800">
+                  {topHardestQuestions.map((q, idx) => (
+                    <li
+                      key={q.id}
+                      className="flex items-start justify-between gap-4 px-5 py-3 text-xs"
+                    >
+                      <div className="flex min-w-0 items-start gap-3">
+                        <span className="font-mono mt-0.5 w-6 shrink-0 font-bold text-slate-400 tabular-nums dark:text-slate-500">
+                          {idx + 1}.
+                        </span>
+                        <div className="min-w-0">
+                          <p className="text-[11px] font-medium text-blue-700 dark:text-blue-400">
+                            {formatLicenseCategoryLabel(q.licenseCategory)} · {q.category}
+                          </p>
+                          <p className="mt-0.5 line-clamp-2 text-sm text-slate-800 dark:text-slate-200">
+                            {q.question}
+                          </p>
+                        </div>
+                      </div>
+                      <span className="font-mono shrink-0 font-semibold text-red-700 tabular-nums dark:text-red-400">
+                        {formatWrongCountLabel(q.wrongCount ?? 0)}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
         </section>
       )}
 
