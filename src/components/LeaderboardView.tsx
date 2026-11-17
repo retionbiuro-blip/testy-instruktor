@@ -1,4 +1,5 @@
 import { Award, Flame, Lock, RefreshCw, Trophy } from 'lucide-react';
+import { isAdminEmail } from '../config';
 import { LeaderboardEntry, UserProgress } from '../types';
 
 interface LeaderboardViewProps {
@@ -48,6 +49,9 @@ export function LeaderboardView({
     );
   }
 
+  const visibleEntries = entries.filter(
+    (entry) => !(isAdminEmail(progress.email) && entry.uid === progress.uid)
+  );
   const history = [...(progress.examHistory ?? [])].reverse();
 
   return (
@@ -73,7 +77,7 @@ export function LeaderboardView({
       </div>
 
       <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
-        {entries.length === 0 ? (
+        {visibleEntries.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500 dark:text-slate-400">
             Ranking jest jeszcze pusty. Rozpocznij naukę, aby zdobyć pierwsze punkty!
           </div>
@@ -90,7 +94,7 @@ export function LeaderboardView({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {entries.map((entry, idx) => {
+              {visibleEntries.map((entry, idx) => {
                 const isSelf = entry.uid === progress.uid;
                 return (
                   <tr

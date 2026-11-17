@@ -21,8 +21,11 @@ import {
 import {
   DEFAULT_CATEGORIES,
   FIRESTORE_BATCH_LIMIT,
-  MISTAKE_CLEAR_STREAK
+  MISTAKE_CLEAR_STREAK,
+  isAdminEmail,
+  isResearchExcludedEmail
 } from '../config';
+import { AnonymizedStudentResearchRow } from '../lib/csvExport';
 import { OperationType, db, handleFirestoreError } from '../lib/firebase';
 import {
   getCachedExamTopics,
@@ -40,6 +43,7 @@ import {
   saveLegalActsToCache,
   saveLessonsToCache,
   saveQuestionsToCache,
+  setCachedPrivacyPolicyText,
   setLocalDbVersion,
   setLocalExamTopicsDbVersion,
   setLocalGlossaryTermsDbVersion,
@@ -215,6 +219,10 @@ export async function syncQuestionsWithCache(
     const metaSnap = await getDoc(METADATA_DOC_REF);
     if (metaSnap.exists()) {
       const data = metaSnap.data();
+      const rawPolicy =
+        typeof data.privacyPolicyText === 'string' && data.privacyPolicyText.trim().length > 0
+          ? data.privacyPolicyText.trim()
+          : undefined;
       metadata = {
         dbVersion: typeof data.dbVersion === 'number' ? data.dbVersion : 0,
         categories:
@@ -225,8 +233,10 @@ export async function syncQuestionsWithCache(
           typeof data.notebookLmUrl === 'string' && data.notebookLmUrl.trim().length > 0
             ? data.notebookLmUrl.trim()
             : undefined,
+        privacyPolicyText: rawPolicy,
         updatedAt: data.updatedAt
       };
+      setCachedPrivacyPolicyText(rawPolicy);
     } else if (isAdmin) {
       // Pierwsze uruchomienie przez admina: inicjalizujemy system/metadata
       await setDoc(METADATA_DOC_REF, {
@@ -235,6 +245,7 @@ export async function syncQuestionsWithCache(
         updatedAt: serverTimestamp()
       });
       metadata = { dbVersion: 1, categories: DEFAULT_CATEGORIES };
+      setCachedPrivacyPolicyText(undefined);
     }
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, 'system/metadata');
@@ -523,14 +534,33 @@ export async function syncGlossaryTermsWithCache(
   }
 }
 
+export async function fetchPublicPrivacyPolicyText(): Promise<string | undefined> {
+  try {
+    const snap = await getDoc(METADATA_DOC_REF);
+    if (!snap.exists()) return undefined;
+    const data = snap.data();
+    const rawPolicy =
+      typeof data.privacyPolicyText === 'string' && data.privacyPolicyText.trim().length > 0
+        ? data.privacyPolicyText.trim()
+        : undefined;
+    setCachedPrivacyPolicyText(rawPolicy);
+    return rawPolicy;
+  } catch (error) {
+    console.warn('Nie udało się pobrać regulaminu z system/metadata:', error);
+    return undefined;
+  }
+}
+
 async function bumpDatabaseVersion(
   nextCategories?: string[],
   knownCurrentVersion?: number,
-  notebookLmUrlOverride?: string | null
+  notebookLmUrlOverride?: string | null,
+  privacyPolicyTextOverride?: string | null
 ): Promise<number> {
   let currentVersion = knownCurrentVersion ?? 0;
   let categories = nextCategories ?? DEFAULT_CATEGORIES;
   let notebookLmUrl: string | null = null;
+  let privacyPolicyText: string | null = null;
 
   try {
     const snap = await getDoc(METADATA_DOC_REF);
@@ -543,10 +573,16 @@ async function bumpDatabaseVersion(
       if (typeof data.notebookLmUrl === 'string' && data.notebookLmUrl.trim().length > 0) {
         notebookLmUrl = data.notebookLmUrl.trim();
       }
+      if (typeof data.privacyPolicyText === 'string' && data.privacyPolicyText.trim().length > 0) {
+        privacyPolicyText = data.privacyPolicyText.trim();
+      }
     }
 
     if (notebookLmUrlOverride !== undefined) {
       notebookLmUrl = notebookLmUrlOverride;
+    }
+    if (privacyPolicyTextOverride !== undefined) {
+      privacyPolicyText = privacyPolicyTextOverride;
     }
 
     const nextVersion = currentVersion + 1;
@@ -557,6 +593,9 @@ async function bumpDatabaseVersion(
     };
     if (notebookLmUrl && notebookLmUrl.trim().length > 0) {
       payload.notebookLmUrl = notebookLmUrl.trim().slice(0, 1000);
+    }
+    if (privacyPolicyText && privacyPolicyText.trim().length > 0) {
+      payload.privacyPolicyText = privacyPolicyText.trim().slice(0, 30000);
     }
 
     await setDoc(METADATA_DOC_REF, payload);
@@ -608,6 +647,13 @@ export async function loadOrCreateUserProgress(
             ? Math.max(0, data.unreadNotifications)
             : 0
       };
+      if (isAdminEmail(user.email)) {
+        try {
+          await deleteDoc(leaderboardRef);
+        } catch {
+          // Brak wpisu w rankingu lub brak potrzeby usuwania
+        }
+      }
       return progress;
     }
 
@@ -639,15 +685,17 @@ export async function loadOrCreateUserProgress(
       updatedAt: serverTimestamp()
     });
 
-    await setDoc(leaderboardRef, {
-      uid: user.uid,
-      nick: initialProgress.nick,
-      masteredCount: 0,
-      points: 0,
-      streakDays: 0,
-      accuracy: 0,
-      updatedAt: serverTimestamp()
-    });
+    if (!isAdminEmail(user.email)) {
+      await setDoc(leaderboardRef, {
+        uid: user.uid,
+        nick: initialProgress.nick,
+        masteredCount: 0,
+        points: 0,
+        streakDays: 0,
+        accuracy: 0,
+        updatedAt: serverTimestamp()
+      });
+    }
 
     return initialProgress;
   } catch (error) {
@@ -712,6 +760,9 @@ function buildFullUserPayload(progress: UserProgress): Record<string, unknown> {
 }
 
 async function persistLeaderboardEntry(progress: UserProgress): Promise<void> {
+  if (isAdminEmail(progress.email)) {
+    return;
+  }
   const leaderboardRef = doc(db, 'leaderboard', progress.uid);
   const accuracy =
     progress.totalAnswered > 0
@@ -1788,4 +1839,96 @@ export async function deleteAdminGlossaryTerm(termId: string): Promise<number> {
     handleFirestoreError(error, OperationType.DELETE, `glossaryTerms/${termId}`);
   }
   return await bumpDatabaseVersion();
+}
+
+// --- REGULAMIN / POLITYKA PRYWATNOŚCI I EKSPORT STATYSTYK DO BADANIA (CSV) ---
+
+export async function saveAdminPrivacyPolicy(
+  rawText: string
+): Promise<{ nextVersion: number; privacyPolicyText?: string }> {
+  const trimmed = rawText.trim();
+  if (trimmed.length > 30000) {
+    throw new Error('Treść regulaminu nie może przekraczać 30 000 znaków.');
+  }
+  const safePolicy = trimmed.length > 0 ? trimmed : null;
+  const nextVersion = await bumpDatabaseVersion(undefined, undefined, undefined, safePolicy);
+  setCachedPrivacyPolicyText(safePolicy);
+  return {
+    nextVersion,
+    privacyPolicyText: safePolicy ?? undefined
+  };
+}
+
+export async function fetchAnonymizedStudentResearchData(): Promise<{
+  rows: AnonymizedStudentResearchRow[];
+  totalUsersCount: number;
+  excludedAccountsCount: number;
+}> {
+  try {
+    const snap = await getDocs(collection(db, 'users'));
+    let excludedAccountsCount = 0;
+
+    const rawMetrics: Omit<AnonymizedStudentResearchRow, 'anonymousId'>[] = [];
+
+    for (const d of snap.docs) {
+      const data = d.data();
+      const email = typeof data.email === 'string' ? data.email : '';
+      if (isResearchExcludedEmail(email)) {
+        excludedAccountsCount += 1;
+        continue;
+      }
+
+      const totalAnswered =
+        typeof data.totalAnswered === 'number' && Number.isFinite(data.totalAnswered) && data.totalAnswered >= 0
+          ? Math.round(data.totalAnswered)
+          : 0;
+      const totalCorrect =
+        typeof data.totalCorrect === 'number' && Number.isFinite(data.totalCorrect) && data.totalCorrect >= 0
+          ? Math.round(data.totalCorrect)
+          : 0;
+      const accuracyPercent =
+        totalAnswered > 0 ? Math.min(100, Math.round((totalCorrect / totalAnswered) * 100)) : 0;
+      const masteredCount = Array.isArray(data.masteredIds) ? data.masteredIds.length : 0;
+      const completedLessonsCount = Array.isArray(data.completedLessonIds)
+        ? data.completedLessonIds.length
+        : 0;
+      const savedOutlinesCount = Array.isArray(data.savedOutlines) ? data.savedOutlines.length : 0;
+      const streakDays =
+        typeof data.streakDays === 'number' && Number.isFinite(data.streakDays) && data.streakDays >= 0
+          ? Math.round(data.streakDays)
+          : 0;
+      const examAttemptsCount = Array.isArray(data.examHistory) ? data.examHistory.length : 0;
+
+      rawMetrics.push({
+        totalAnswered,
+        totalCorrect,
+        accuracyPercent,
+        masteredCount,
+        completedLessonsCount,
+        savedOutlinesCount,
+        streakDays,
+        examAttemptsCount
+      });
+    }
+
+    rawMetrics.sort(
+      (a, b) =>
+        b.totalAnswered - a.totalAnswered ||
+        b.masteredCount - a.masteredCount ||
+        b.accuracyPercent - a.accuracyPercent
+    );
+
+    const rows: AnonymizedStudentResearchRow[] = rawMetrics.map((item, idx) => ({
+      anonymousId: `Kursant_${String(idx + 1).padStart(2, '0')}`,
+      ...item
+    }));
+
+    return {
+      rows,
+      totalUsersCount: snap.size,
+      excludedAccountsCount
+    };
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, 'users');
+  }
 }

@@ -18,6 +18,11 @@
           "maxLength": 1000,
           "description": "Optional public share URL to the Google NotebookLM legal assistant notebook."
         },
+        "privacyPolicyText": {
+          "type": "string",
+          "maxLength": 30000,
+          "description": "Optional customizable Privacy Policy and Terms of Service text displayed in the footer modal."
+        },
         "updatedAt": {
           "type": "string",
           "format": "date-time",

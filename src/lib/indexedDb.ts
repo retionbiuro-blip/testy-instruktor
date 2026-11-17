@@ -14,6 +14,7 @@ const LOCAL_EXAM_TOPICS_VERSION_KEY = 'instruktor_exam_topics_db_version';
 const LOCAL_GLOSSARY_TERMS_VERSION_KEY = 'instruktor_glossary_terms_db_version';
 const THEME_STORAGE_KEY = 'instruktor_theme';
 const LAST_BULK_IMAGE_BATCH_KEY = 'instruktor_last_bulk_image_batch';
+const PRIVACY_POLICY_CACHE_KEY = 'instruktor_privacy_policy_text';
 
 export interface LastBulkImageBatch {
   questionIds: string[];
@@ -310,4 +311,33 @@ export function saveLastBulkImageBatch(questionIds: string[]): LastBulkImageBatc
 
 export function clearLastBulkImageBatch(): void {
   localStorage.removeItem(LAST_BULK_IMAGE_BATCH_KEY);
+}
+
+export function getCachedPrivacyPolicyText(): string | undefined {
+  try {
+    const val = localStorage.getItem(PRIVACY_POLICY_CACHE_KEY);
+    return val && val.trim().length > 0 ? val : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function setCachedPrivacyPolicyText(text?: string | null): void {
+  try {
+    if (text && text.trim().length > 0) {
+      localStorage.setItem(PRIVACY_POLICY_CACHE_KEY, text);
+    } else {
+      localStorage.removeItem(PRIVACY_POLICY_CACHE_KEY);
+    }
+  } catch {
+    // Ignoruj błędy limitu localStorage
+  }
+}
+
+export function syncAllLocalDbVersions(version: number): void {
+  setLocalDbVersion(version);
+  setLocalLessonsDbVersion(version);
+  setLocalLegalActsDbVersion(version);
+  setLocalExamTopicsDbVersion(version);
+  setLocalGlossaryTermsDbVersion(version);
 }

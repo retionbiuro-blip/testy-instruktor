@@ -74,6 +74,7 @@ export interface SystemMetadata {
   dbVersion: number;
   categories: string[];
   notebookLmUrl?: string;
+  privacyPolicyText?: string;
   updatedAt?: unknown;
 }
 

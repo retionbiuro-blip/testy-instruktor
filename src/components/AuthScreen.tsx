@@ -12,6 +12,7 @@ interface AuthScreenProps {
   onToggleTheme: () => void;
   onRegisteredNick: (nick: string) => void;
   onContinueAsGuest: () => void;
+  onOpenPrivacyPolicy: () => void;
   initialMode?: 'login' | 'register';
 }
 
@@ -43,6 +44,7 @@ export function AuthScreen({
   onToggleTheme,
   onRegisteredNick,
   onContinueAsGuest,
+  onOpenPrivacyPolicy,
   initialMode = 'login'
 }: AuthScreenProps) {
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
@@ -277,6 +279,19 @@ export function AuthScreen({
           </div>
         </section>
       </main>
+
+      <footer className="mx-auto max-w-5xl px-4 pt-2 pb-14 sm:px-6 sm:pb-8">
+        <div className="flex flex-col items-center justify-between gap-2 border-t border-slate-200 pt-5 text-xs text-slate-500 sm:flex-row dark:border-slate-800 dark:text-slate-400">
+          <span>InstruktorPro · Przygotowanie do egzaminu na instruktora nauki jazdy</span>
+          <button
+            type="button"
+            onClick={onOpenPrivacyPolicy}
+            className="cursor-pointer font-medium text-slate-600 underline decoration-slate-300 underline-offset-4 transition-colors hover:text-blue-700 dark:text-slate-300 dark:decoration-slate-700 dark:hover:text-blue-400"
+          >
+            Polityka Prywatności i Regulamin
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

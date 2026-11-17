@@ -10,14 +10,16 @@ import { LeaderboardView } from './components/LeaderboardView';
 import { LegalActsView } from './components/LegalActsView';
 import { Navbar } from './components/Navbar';
 import { OfflineIndicator } from './components/PWAInstallButton';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { StudyView } from './components/StudyView';
 import { UserInboxModal } from './components/UserInboxModal';
-import { ADMIN_EMAIL, ALL_CATEGORIES_KEY, DEFAULT_CATEGORIES } from './config';
+import { ALL_CATEGORIES_KEY, DEFAULT_CATEGORIES, isAdminEmail } from './config';
 import { DEFAULT_EXAM_TOPICS, DIDACTICS_GLOSSARY } from './data/knowledgePracticeData';
 import { auth, testFirestoreConnection } from './lib/firebase';
-import { getStoredTheme, setStoredTheme } from './lib/indexedDb';
+import { getCachedPrivacyPolicyText, getStoredTheme, setStoredTheme } from './lib/indexedDb';
 import {
   fetchLeaderboard,
+  fetchPublicPrivacyPolicyText,
   fetchReports,
   fetchSystemWrongCounts,
   loadOrCreateUserProgress,
@@ -83,6 +85,12 @@ export default function App() {
   const [glossaryTerms, setGlossaryTerms] = useState<GlossaryTerm[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [notebookLmUrl, setNotebookLmUrl] = useState<string | undefined>(undefined);
+  const [privacyPolicyText, setPrivacyPolicyText] = useState<string | undefined>(() =>
+    getCachedPrivacyPolicyText()
+  );
+  const [privacyModalOpen, setPrivacyModalOpen] = useState(false);
+  const [loadingPrivacyPolicy, setLoadingPrivacyPolicy] = useState(false);
+  const [privacyFetchedFromServer, setPrivacyFetchedFromServer] = useState(false);
   const [dbVersion, setDbVersion] = useState<number>(0);
   const [progress, setProgress] = useState<UserProgress | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
@@ -125,9 +133,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  const isAdmin = Boolean(
-    authUser?.email && authUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase()
-  );
+  const isAdmin = isAdminEmail(authUser?.email);
 
   // Inicjalizacja danych po zalogowaniu (1 odczyt system/metadata + cache IndexedDB)
   const bootstrapAppData = useCallback(
@@ -158,6 +164,8 @@ export default function App() {
         setGlossaryTerms(glossaryRes.glossaryTerms);
         setCategories(syncRes.metadata.categories);
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
+        setPrivacyPolicyText(syncRes.metadata.privacyPolicyText);
+        setPrivacyFetchedFromServer(true);
         setDbVersion(syncRes.metadata.dbVersion);
         setProgress(userProg);
         setLeaderboard(board);
@@ -189,6 +197,8 @@ export default function App() {
       setQuestions(syncRes.questions);
       setCategories(syncRes.metadata.categories);
       setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
+      setPrivacyPolicyText(syncRes.metadata.privacyPolicyText);
+      setPrivacyFetchedFromServer(true);
       setDbVersion(syncRes.metadata.dbVersion);
     } catch (err) {
       console.error('Błąd ładowania pytań w trybie gościa:', err);
@@ -231,6 +241,8 @@ export default function App() {
         setQuestions(syncRes.questions);
         setCategories(syncRes.metadata.categories);
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
+        setPrivacyPolicyText(syncRes.metadata.privacyPolicyText);
+        setPrivacyFetchedFromServer(true);
         setDbVersion(syncRes.metadata.dbVersion);
       } else {
         const [syncRes, board, statsMap] = await Promise.all([
@@ -251,6 +263,8 @@ export default function App() {
         setGlossaryTerms(glossaryRes.glossaryTerms);
         setCategories(syncRes.metadata.categories);
         setNotebookLmUrl(syncRes.metadata.notebookLmUrl);
+        setPrivacyPolicyText(syncRes.metadata.privacyPolicyText);
+        setPrivacyFetchedFromServer(true);
         setDbVersion(syncRes.metadata.dbVersion);
         setLeaderboard(board);
         setGroupWrongCounts(statsMap);
@@ -410,6 +424,20 @@ export default function App() {
     []
   );
 
+  const handleOpenPrivacyPolicy = useCallback(async () => {
+    setPrivacyModalOpen(true);
+    if (!privacyFetchedFromServer) {
+      setLoadingPrivacyPolicy(true);
+      try {
+        const remoteText = await fetchPublicPrivacyPolicyText();
+        setPrivacyPolicyText(remoteText);
+        setPrivacyFetchedFromServer(true);
+      } finally {
+        setLoadingPrivacyPolicy(false);
+      }
+    }
+  }, [privacyFetchedFromServer]);
+
   // Ekran oczekiwania na sprawdzenie sesji
   if (!authReady) {
     return (
@@ -425,16 +453,25 @@ export default function App() {
   // Ekran logowania i rejestracji
   if (!authUser && !isGuest) {
     return (
-      <AuthScreen
-        theme={theme}
-        onToggleTheme={toggleTheme}
-        onRegisteredNick={(nick) => setPendingNick(nick)}
-        initialMode={authInitialMode}
-        onContinueAsGuest={() => {
-          setIsGuest(true);
-          setCurrentView('dashboard');
-        }}
-      />
+      <>
+        <AuthScreen
+          theme={theme}
+          onToggleTheme={toggleTheme}
+          onRegisteredNick={(nick) => setPendingNick(nick)}
+          initialMode={authInitialMode}
+          onOpenPrivacyPolicy={() => void handleOpenPrivacyPolicy()}
+          onContinueAsGuest={() => {
+            setIsGuest(true);
+            setCurrentView('dashboard');
+          }}
+        />
+        <PrivacyPolicyModal
+          open={privacyModalOpen}
+          text={privacyPolicyText}
+          loading={loadingPrivacyPolicy}
+          onClose={() => setPrivacyModalOpen(false)}
+        />
+      </>
     );
   }
 
@@ -643,6 +680,7 @@ export default function App() {
                 glossaryTerms={glossaryTerms}
                 categories={categories}
                 notebookLmUrl={notebookLmUrl}
+                privacyPolicyText={privacyPolicyText}
                 reports={reports}
                 initialTab={adminInitialTab}
                 onQuestionsUpdated={(nextQuestions, nextCats, nextVer) => {
@@ -671,6 +709,10 @@ export default function App() {
                   setNotebookLmUrl(nextUrl);
                   setDbVersion(nextVer);
                 }}
+                onPrivacyPolicyUpdated={(nextText, nextVer) => {
+                  setPrivacyPolicyText(nextText);
+                  setDbVersion(nextVer);
+                }}
                 onReportsUpdated={setReports}
                 onRefreshReports={handleRefreshReports}
               />
@@ -678,6 +720,19 @@ export default function App() {
           </>
         )}
       </main>
+
+      <footer className="mx-auto mt-6 max-w-7xl px-4 pb-6 sm:px-6">
+        <div className="flex flex-col items-center justify-between gap-2 border-t border-slate-200/80 pt-5 text-xs text-slate-500 sm:flex-row dark:border-slate-800/80 dark:text-slate-400">
+          <span>InstruktorPro · Przygotowanie do egzaminu na instruktora nauki jazdy</span>
+          <button
+            type="button"
+            onClick={() => void handleOpenPrivacyPolicy()}
+            className="cursor-pointer font-medium text-slate-600 underline decoration-slate-300 underline-offset-4 transition-colors hover:text-blue-700 dark:text-slate-300 dark:decoration-slate-700 dark:hover:text-blue-400"
+          >
+            Polityka Prywatności i Regulamin
+          </button>
+        </div>
+      </footer>
 
       {inboxOpen && !guestModeActive && activeProgress && (
         <UserInboxModal
@@ -688,6 +743,13 @@ export default function App() {
           onClose={() => setInboxOpen(false)}
         />
       )}
+
+      <PrivacyPolicyModal
+        open={privacyModalOpen}
+        text={privacyPolicyText}
+        loading={loadingPrivacyPolicy}
+        onClose={() => setPrivacyModalOpen(false)}
+      />
 
       <OfflineIndicator />
     </div>

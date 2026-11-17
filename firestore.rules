@@ -39,11 +39,12 @@ service cloud.firestore {
     // --- WALIDATORY SCHEMATÓW ---
     function isValidSystemMetadata(data) {
       return data.keys().hasAll(['dbVersion', 'categories']) &&
-        data.keys().hasOnly(['dbVersion', 'categories', 'notebookLmUrl', 'updatedAt']) &&
+        data.keys().hasOnly(['dbVersion', 'categories', 'notebookLmUrl', 'privacyPolicyText', 'updatedAt']) &&
         data.dbVersion is number && data.dbVersion >= 0 &&
         data.categories is list && data.categories.size() <= 100 &&
         (data.categories.size() == 0 || data.categories[0] is string) &&
-        (!('notebookLmUrl' in data) || data.notebookLmUrl == null || (data.notebookLmUrl is string && data.notebookLmUrl.size() <= 1000));
+        (!('notebookLmUrl' in data) || data.notebookLmUrl == null || (data.notebookLmUrl is string && data.notebookLmUrl.size() <= 1000)) &&
+        (!('privacyPolicyText' in data) || data.privacyPolicyText == null || (data.privacyPolicyText is string && data.privacyPolicyText.size() <= 30000));
     }
 
     function isValidSystemStats(data) {

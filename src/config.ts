@@ -11,6 +11,22 @@ import appletConfig from '../firebase-applet-config.json';
 // WAŻNE: Ten sam adres e-mail wpisz również w pliku firestore.rules (funkcja isAdmin).
 export const ADMIN_EMAIL = 'retion.biuro@gmail.com';
 
+// Konta autora/testowe wykluczane z eksportu statystyk do badania naukowego (CSV)
+export const RESEARCH_EXCLUDED_EMAILS: string[] = [
+  'retion.biuro@gmail.com',
+  'mateuszkolodziej@poczta.onet.pl'
+];
+
+export function isAdminEmail(email?: string | null): boolean {
+  return Boolean(email && email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase());
+}
+
+export function isResearchExcludedEmail(email?: string | null): boolean {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return RESEARCH_EXCLUDED_EMAILS.some((excluded) => excluded.toLowerCase() === normalized);
+}
+
 // 2. Jeśli przenosisz aplikację na WŁASNY projekt Firebase (np. na Netlify):
 // Odkomentuj poniższy obiekt MANUAL_FIREBASE_CONFIG i wklej swoje klucze
 // skopiowane z konsoli Firebase (Ustawienia projektu -> Twoje aplikacje -> Aplikacja webowa).

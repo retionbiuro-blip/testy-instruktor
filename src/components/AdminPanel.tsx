@@ -69,6 +69,8 @@ import { AdminExamTopicsTab } from './AdminExamTopicsTab';
 import { AdminGlossaryTab } from './AdminGlossaryTab';
 import { AdminLegalActsTab } from './AdminLegalActsTab';
 import { AdminMaterialsTab } from './AdminMaterialsTab';
+import { AdminPrivacyPolicyTab } from './AdminPrivacyPolicyTab';
+import { AdminResearchExportTab } from './AdminResearchExportTab';
 import { BulkImageMatcher } from './BulkImageMatcher';
 import { LicenseCategorySieve } from './LicenseCategorySieve';
 
@@ -80,6 +82,7 @@ interface AdminPanelProps {
   glossaryTerms: GlossaryTerm[];
   categories: string[];
   notebookLmUrl?: string;
+  privacyPolicyText?: string;
   reports: ReportItem[];
   initialTab?:
     | 'import'
@@ -89,13 +92,16 @@ interface AdminPanelProps {
     | 'legal-acts'
     | 'exam-topics'
     | 'glossary'
-    | 'reports';
+    | 'reports'
+    | 'privacy'
+    | 'research-export';
   onQuestionsUpdated: (nextQuestions: Question[], nextCategories: string[], nextVersion: number) => void;
   onLessonsUpdated: (nextLessons: Lesson[], nextCategories: string[], nextVersion: number) => void;
   onLegalActsUpdated: (nextActs: LegalAct[], nextVersion: number) => void;
   onExamTopicsUpdated: (nextTopics: ExamTopic[], nextVersion: number) => void;
   onGlossaryTermsUpdated: (nextTerms: GlossaryTerm[], nextVersion: number) => void;
   onNotebookLmUpdated: (nextUrl: string | undefined, nextVersion: number) => void;
+  onPrivacyPolicyUpdated: (nextText: string | undefined, nextVersion: number) => void;
   onReportsUpdated: (nextReports: ReportItem[]) => void;
   onRefreshReports: () => Promise<void>;
 }
@@ -110,6 +116,7 @@ export function AdminPanel({
   glossaryTerms,
   categories,
   notebookLmUrl,
+  privacyPolicyText,
   reports,
   initialTab,
   onQuestionsUpdated,
@@ -118,6 +125,7 @@ export function AdminPanel({
   onExamTopicsUpdated,
   onGlossaryTermsUpdated,
   onNotebookLmUpdated,
+  onPrivacyPolicyUpdated,
   onReportsUpdated,
   onRefreshReports
 }: AdminPanelProps) {
@@ -130,6 +138,8 @@ export function AdminPanel({
     | 'exam-topics'
     | 'glossary'
     | 'reports'
+    | 'privacy'
+    | 'research-export'
   >(initialTab ?? 'import');
 
   useEffect(() => {
@@ -1013,6 +1023,36 @@ export function AdminPanel({
           >
             Zgłoszenia ({openReportsCount})
           </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('privacy');
+              setBulkMatchMode(false);
+              setSieveMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'privacy'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Regulamin i Polityka
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('research-export');
+              setBulkMatchMode(false);
+              setSieveMode(false);
+            }}
+            className={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-semibold whitespace-nowrap ${
+              activeTab === 'research-export'
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-white'
+                : 'text-slate-600 dark:text-slate-300'
+            }`}
+          >
+            Eksport CSV (Badanie)
+          </button>
         </div>
       </div>
 
@@ -1050,6 +1090,19 @@ export function AdminPanel({
           glossaryTerms={glossaryTerms}
           onGlossaryTermsUpdated={onGlossaryTermsUpdated}
         />
+      )}
+
+      {/* ZAKŁADKA: REGULAMIN I POLITYKA PRYWATNOŚCI */}
+      {activeTab === 'privacy' && (
+        <AdminPrivacyPolicyTab
+          privacyPolicyText={privacyPolicyText}
+          onPrivacyPolicyUpdated={onPrivacyPolicyUpdated}
+        />
+      )}
+
+      {/* ZAKŁADKA: EKSPORT CSV DO BADANIA NAUKOWEGO */}
+      {activeTab === 'research-export' && (
+        <AdminResearchExportTab questions={questions} />
       )}
 
       {/* ZAKŁADKA 1: MASOWY IMPORT JSON */}

@@ -17,7 +17,7 @@ import {
   Zap
 } from 'lucide-react';
 import { useState } from 'react';
-import { ALL_CATEGORIES_KEY, ALL_CATEGORIES_LABEL } from '../config';
+import { ALL_CATEGORIES_KEY, ALL_CATEGORIES_LABEL, isAdminEmail } from '../config';
 import { formatLicenseCategoryLabel, matchesLicenseCategory } from '../lib/questionUtils';
 import {
   AppView,
@@ -119,7 +119,10 @@ export function DashboardView({
     };
   });
 
-  const topLeaderboard = leaderboard.slice(0, 6);
+  const visibleLeaderboard = leaderboard.filter(
+    (entry) => !((isAdmin || isAdminEmail(progress.email)) && entry.uid === progress.uid)
+  );
+  const topLeaderboard = visibleLeaderboard.slice(0, 6);
 
   const topHardestQuestions = licenseQuestions
     .map((q) => ({
